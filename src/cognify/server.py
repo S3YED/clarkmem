@@ -51,7 +51,7 @@ def ingest(body: dict):
         r = cognify.ingest(_be(), text, tenant=body.get("tenant", "default"),
                            namespace=body.get("namespace", "default"),
                            agent=body.get("agent", "agent"),
-                           is_path=bool(body.get("path")),
+                           is_path=bool(body.get("path")), title=body.get("title"),
                            do_extract=body.get("extract", True), workers=workers)
         return r.__dict__
     except Exception as e:
