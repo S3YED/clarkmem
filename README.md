@@ -1,5 +1,7 @@
 # Cognify
 
+[![ci](https://github.com/S3YED/cognify/actions/workflows/ci.yml/badge.svg)](https://github.com/S3YED/cognify/actions/workflows/ci.yml)
+
 A lightweight document-ingestion and **typed knowledge-graph** engine you can
 hand to an agent. Drop in raw documents, get back a queryable graph of typed
 entities and relations plus hybrid (vector + graph) retrieval.
@@ -61,7 +63,10 @@ embed-it-in-your-agent option, not the managed-platform option.
 ingest(doc) ->  Extract: file/text -> heading-aware ~512-token chunks
                 Cognify: per chunk, cheap LLM -> typed entities + relations
                 Load:    embed chunks (384d) -> vectors ; write graph
-recall(q)   ->  vector search (tenant-scoped) -> expand graph -> chunks + subgraph
+recall(q)   ->  vector search (tenant-scoped) -> expand graph (hops=1..3)
+                -> chunks + subgraph
+forget(doc) ->  delete a document + its chunks/vectors, prune entities no
+                longer mentioned anywhere (CLI `cognify forget`, HTTP DELETE /doc)
 ```
 
 ## Quickstart

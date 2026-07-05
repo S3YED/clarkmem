@@ -8,10 +8,11 @@ Env:  COGNIFY_HOST (comma-separated for multi-bind), COGNIFY_PORT, COGNIFY_BACKE
       plus the usual LLM/Neo4j vars.
 
 Endpoints:
-  GET  /health   (always open — for watchdogs)
-  POST /ingest   {text|path, title, tenant, namespace, agent, extract, workers}
-  POST /recall   {query, tenant, namespace, k}
-  GET  /stats?tenant=
+  GET    /health   (always open — for watchdogs)
+  POST   /ingest   {text|path, title, tenant, namespace, agent, extract, workers}
+  POST   /recall   {query, tenant, namespace, k, hops}
+  DELETE /doc?doc_id=&tenant=
+  GET    /stats?tenant=&namespace=
 
 Auth: set COGNIFY_API_KEY to require an x-api-key header on every endpoint
 except /health. Unset = open (loopback-only single-user setups).
@@ -78,17 +79,29 @@ def recall(body: dict, x_api_key: str | None = Header(None)):
         raise HTTPException(400, "provide 'query'")
     try:
         res = cognify.recall(_be(), q, tenant=body.get("tenant", "default"),
-                             namespace=body.get("namespace"), k=int(body.get("k", 8)))
+                             namespace=body.get("namespace"), k=int(body.get("k", 8)),
+                             hops=int(body.get("hops", 1)))
         return {"query": res.query, "tenant": res.tenant, "chunks": list(res.chunks),
                 "entities": list(res.entities), "relations": list(res.relations)}
     except Exception as e:
         raise HTTPException(500, f"recall failed: {e}")
 
 
-@app.get("/stats")
-def stats(tenant: str = Query(None), x_api_key: str | None = Header(None)):
+@app.delete("/doc")
+def forget(doc_id: str = Query(...), tenant: str = Query("default"),
+           x_api_key: str | None = Header(None)):
     _auth(x_api_key)
-    return _be().stats(tenant=tenant)
+    try:
+        return _be().delete_document(doc_id, tenant=tenant)
+    except Exception as e:
+        raise HTTPException(500, f"delete failed: {e}")
+
+
+@app.get("/stats")
+def stats(tenant: str = Query(None), namespace: str = Query(None),
+          x_api_key: str | None = Header(None)):
+    _auth(x_api_key)
+    return _be().stats(tenant=tenant, namespace=namespace)
 
 
 def main():

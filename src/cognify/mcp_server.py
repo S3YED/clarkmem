@@ -57,6 +57,14 @@ def cognify_recall(query: str, tenant: str = "default", k: int = 8) -> dict:
 
 
 @mcp.tool()
+def cognify_forget(doc_id: str, tenant: str = "default") -> dict:
+    """Delete a document from the knowledge graph: its chunks, vectors, and any
+    entities that are no longer mentioned anywhere. Get doc_id from ingest
+    results or recall chunks."""
+    return _be().delete_document(doc_id, tenant=tenant)
+
+
+@mcp.tool()
 def cognify_stats(tenant: str = "default") -> dict:
     """Counts of documents, chunks, entities and relations for a tenant."""
     return _be().stats(tenant=tenant)

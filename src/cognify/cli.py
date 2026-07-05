@@ -12,11 +12,12 @@ import cognify
 from cognify import config
 
 
-def _cache_path(tenant: str) -> Path:
+def _cache_path(tenant: str, namespace: str) -> Path:
     import re
     d = config.DATA_DIR / "cache"
     d.mkdir(parents=True, exist_ok=True)
-    return d / f"ingest-{re.sub(r'[^a-zA-Z0-9_.-]', '_', tenant)}.json"
+    safe = re.sub(r"[^a-zA-Z0-9_.-]", "_", f"{tenant}--{namespace}")
+    return d / f"ingest-{safe}.json"
 
 
 def cmd_ingest(a):
@@ -33,7 +34,7 @@ def cmd_ingest_dir(a):
     files = sorted(p for p in Path(a.path).expanduser().glob(a.glob) if p.is_file())
     if a.limit:
         files = files[:a.limit]
-    cache, cpath = {}, _cache_path(a.tenant)
+    cache, cpath = {}, _cache_path(a.tenant, a.namespace)
     if a.cache and cpath.exists():
         try:
             cache = json.loads(cpath.read_text())
@@ -70,7 +71,7 @@ def cmd_ingest_dir(a):
 
 def cmd_recall(a):
     be = cognify.get_backend(a.backend)
-    res = cognify.recall(be, a.query, tenant=a.tenant, namespace=a.namespace, k=a.k)
+    res = cognify.recall(be, a.query, tenant=a.tenant, namespace=a.namespace, k=a.k, hops=a.hops)
     print(json.dumps({
         "query": res.query, "tenant": res.tenant,
         "chunks": [{"score": c["score"], "heading": c.get("heading"), "text": c["text"][:200]}
@@ -82,7 +83,13 @@ def cmd_recall(a):
 
 def cmd_stats(a):
     be = cognify.get_backend(a.backend)
-    print(json.dumps(be.stats(tenant=a.tenant), indent=2)); be.close()
+    ns = None if a.namespace == "default" else a.namespace
+    print(json.dumps(be.stats(tenant=a.tenant, namespace=ns), indent=2)); be.close()
+
+
+def cmd_forget(a):
+    be = cognify.get_backend(a.backend)
+    print(json.dumps(be.delete_document(a.doc_id, tenant=a.tenant), indent=2)); be.close()
 
 
 def main():
@@ -94,7 +101,8 @@ def main():
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("ingest"); s.add_argument("path"); s.add_argument("--no-extract", action="store_true"); s.add_argument("--workers", type=int, default=0); s.set_defaults(fn=cmd_ingest)
     s = sub.add_parser("ingest-dir"); s.add_argument("path"); s.add_argument("--glob", default="**/*.md"); s.add_argument("--limit", type=int, default=0); s.add_argument("--no-extract", action="store_true"); s.add_argument("--cache", action="store_true"); s.add_argument("--workers", type=int, default=0); s.set_defaults(fn=cmd_ingest_dir)
-    s = sub.add_parser("recall"); s.add_argument("query"); s.add_argument("-k", type=int, default=8); s.set_defaults(fn=cmd_recall)
+    s = sub.add_parser("recall"); s.add_argument("query"); s.add_argument("-k", type=int, default=8); s.add_argument("--hops", type=int, default=1); s.set_defaults(fn=cmd_recall)
+    s = sub.add_parser("forget"); s.add_argument("doc_id"); s.set_defaults(fn=cmd_forget)
     s = sub.add_parser("stats"); s.set_defaults(fn=cmd_stats)
     a = p.parse_args(); a.fn(a)
 

@@ -96,6 +96,20 @@ def _parse(content: str) -> Extraction:
     return Extraction(entities=tuple(ents), relations=tuple(rels))
 
 
+_RETRYABLE = {429, 500, 502, 503, 504}
+
+
+def _post_with_retry(url: str, payload: dict, headers: dict, timeout: int):
+    """One retry with a short backoff on rate limits / transient 5xx — enough to
+    smooth bulk ingests without hiding a persistently broken endpoint."""
+    import time
+    resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
+    if resp.status_code in _RETRYABLE:
+        time.sleep(2.0)
+        resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
+    return resp
+
+
 def _call_openai(text: str, key: str, timeout: int) -> str:
     """Any OpenAI-compatible /chat/completions endpoint (OpenRouter, OpenAI, vLLM, Ollama)."""
     payload = {
@@ -107,10 +121,10 @@ def _call_openai(text: str, key: str, timeout: int) -> str:
     }
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     url = f"{config.LLM_BASE}/chat/completions"
-    resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
+    resp = _post_with_retry(url, payload, headers, timeout)
     if resp.status_code == 400:  # some models reject response_format
         payload.pop("response_format", None)
-        resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
+        resp = _post_with_retry(url, payload, headers, timeout)
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"]
 
@@ -125,7 +139,7 @@ def _call_anthropic(text: str, key: str, timeout: int) -> str:
         "messages": [{"role": "user", "content": text[:6000]}],
     }
     headers = {"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
-    resp = requests.post(f"{config.ANTHROPIC_BASE}/v1/messages", json=payload, headers=headers, timeout=timeout)
+    resp = _post_with_retry(f"{config.ANTHROPIC_BASE}/v1/messages", payload, headers, timeout)
     resp.raise_for_status()
     blocks = resp.json().get("content", [])
     return "".join(b.get("text", "") for b in blocks if b.get("type") == "text")

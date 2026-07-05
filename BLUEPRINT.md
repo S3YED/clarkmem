@@ -68,7 +68,14 @@ to `". "` when past the halfway point. Drop pieces < 40 chars.
   → `backend.load_document` → `IngestResult`.
 - `recall(backend, query, *, tenant, namespace, k=8, hops=1)`: embed query →
   `backend.search` → `backend.expand` on hit chunk ids → `RecallResult(chunks,
-  entities, relations)`.
+  entities, relations)`. `expand` honors `hops` 1..3: hop 1 = relations out of
+  the hit chunks' entities; each further hop follows discovered objects
+  (entities beyond the seeds are returned only when hops > 1).
+- `backend.delete_document(doc_id, *, tenant)`: remove doc + chunks + vectors,
+  then prune entities with no remaining MENTIONED_IN edge. Both backends.
+- `backend.stats(*, tenant, namespace=None)`: with namespace, documents/chunks
+  are filtered; entities/relations stay tenant-wide (they merge across
+  namespaces).
 
 ## Step 5 — backends (implement the Protocol)
 
@@ -95,11 +102,12 @@ Entity id = `f"{tenant}::{name.lower()}::{type}"`. Every node carries `tenant` +
 
 ## Step 6 — `cli.py`
 
-`cognify {ingest,ingest-dir,recall,stats}` with `--backend/--tenant/--namespace/
---agent`. Both ingest commands take `--workers`. `ingest-dir` takes `--glob`,
-`--limit`, `--no-extract`, and `--cache`
+`cognify {ingest,ingest-dir,recall,forget,stats}` with `--backend/--tenant/
+--namespace/--agent`. Both ingest commands take `--workers`; `recall` takes
+`--hops`. `ingest-dir` takes `--glob`, `--limit`, `--no-extract`, and `--cache`
 (skip files whose sha256 is unchanged since last run; cache at
-`DATA_DIR/cache/ingest-<tenant>.json`). Console script entry in `pyproject.toml`.
+`DATA_DIR/cache/ingest-<tenant>--<namespace>.json` — namespaced so the same dir
+can be ingested into two namespaces). Console script entry in `pyproject.toml`.
 
 ## Step 7 — packaging & tests
 

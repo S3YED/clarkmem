@@ -15,7 +15,6 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
@@ -165,29 +164,75 @@ class Neo4jBackend:
     def expand(self, chunk_ids, *, tenant, hops):
         if not chunk_ids:
             return {"entities": [], "relations": []}
+        h = max(1, min(int(hops or 1), 3))  # var-length bounds can't be parameterized
         with self._driver.session() as s:
             ent = s.run(f"MATCH (e:{_ENT})-[:MENTIONED_IN]->(c:{_CHUNK}) "
                         "WHERE c.id IN $cids AND e.tenant=$t "
                         "RETURN DISTINCT e.name AS name,e.etype AS etype,e.id AS id LIMIT 100",
                         cids=chunk_ids, t=tenant).data()
             eids = [e["id"] for e in ent]
-            rel = s.run(f"MATCH (a:{_ENT})-[r:REL]->(b:{_ENT}) WHERE a.id IN $e AND a.tenant=$t "
-                        "RETURN a.name AS subject,r.type AS predicate,b.name AS object LIMIT 200",
-                        e=eids, t=tenant).data() if eids else []
-        return {"entities": ent, "relations": rel}
+            rel, more = [], []
+            if eids:
+                rel = s.run(f"MATCH p=(a:{_ENT})-[:REL*1..{h}]->(:{_ENT}) "
+                            "WHERE a.id IN $e AND a.tenant=$t "
+                            "UNWIND relationships(p) AS r "
+                            "RETURN DISTINCT startNode(r).name AS subject, r.type AS predicate, "
+                            "endNode(r).name AS object LIMIT 200",
+                            e=eids, t=tenant).data()
+                if h > 1:
+                    more = s.run(f"MATCH p=(a:{_ENT})-[:REL*1..{h}]->(:{_ENT}) "
+                                 "WHERE a.id IN $e AND a.tenant=$t "
+                                 "UNWIND nodes(p) AS n WITH DISTINCT n WHERE NOT n.id IN $e "
+                                 "RETURN n.name AS name, n.etype AS etype, n.id AS id LIMIT 50",
+                                 e=eids, t=tenant).data()
+        return {"entities": (ent + more)[:100], "relations": rel}
+
+    # -- delete ------------------------------------------------------------
+    def delete_document(self, doc_id, *, tenant):
+        """Remove a document, its chunks (graph + vectors), then prune entities
+        with no remaining MENTIONED_IN edge anywhere in this tenant."""
+        with self._lock:
+            with self._driver.session() as s:
+                cids = [r["id"] for r in s.run(
+                    f"MATCH (c:{_CHUNK})-[:PART_OF]->(d:{_DOC} {{id:$id}}) "
+                    "WHERE d.tenant=$t RETURN c.id AS id", id=doc_id, t=tenant)]
+                s.run(f"MATCH (d:{_DOC} {{id:$id}}) WHERE d.tenant=$t "
+                      f"OPTIONAL MATCH (c:{_CHUNK})-[:PART_OF]->(d) DETACH DELETE c, d",
+                      id=doc_id, t=tenant)
+                pruned = s.run(f"MATCH (e:{_ENT} {{tenant:$t}}) "
+                               "WHERE NOT (e)-[:MENTIONED_IN]->() "
+                               "WITH e DETACH DELETE e RETURN count(*) AS n",
+                               t=tenant).single()["n"]
+            idx, meta = self._load_index(tenant)
+            for cid in cids:
+                ci = _cid_int(cid)
+                try:
+                    idx.remove(ci)
+                except Exception:
+                    pass
+                meta.pop(ci, None)
+            self._save_index(tenant)
+        return {"doc_id": doc_id, "chunks_deleted": len(cids), "entities_pruned": pruned}
 
     # -- stats -------------------------------------------------------------
-    def stats(self, *, tenant):
+    def stats(self, *, tenant, namespace=None):
+        """Counts for a tenant. With namespace: documents/chunks are filtered
+        (entities/relations stay tenant-wide — they merge across namespaces)."""
         where = "WHERE n.tenant=$t" if tenant else ""
+        ns_where = where + (" AND n.namespace=$ns" if (tenant and namespace) else "")
         p = {"t": tenant} if tenant else {}
+        np_ = {**p, "ns": namespace} if namespace else p
         with self._driver.session() as s:
-            d = s.run(f"MATCH (n:{_DOC}) {where} RETURN count(n) AS c", **p).single()["c"]
-            c = s.run(f"MATCH (n:{_CHUNK}) {where} RETURN count(n) AS c", **p).single()["c"]
+            d = s.run(f"MATCH (n:{_DOC}) {ns_where} RETURN count(n) AS c", **np_).single()["c"]
+            c = s.run(f"MATCH (n:{_CHUNK}) {ns_where} RETURN count(n) AS c", **np_).single()["c"]
             e = s.run(f"MATCH (n:{_ENT}) {where} RETURN count(n) AS c", **p).single()["c"]
             r = s.run(f"MATCH (:{_ENT})-[rel:REL]->() "
                       + ("WHERE startNode(rel).tenant=$t " if tenant else "")
                       + "RETURN count(rel) AS c", **p).single()["c"]
-        return {"documents": d, "chunks": c, "entities": e, "relations": r}
+        out = {"documents": d, "chunks": c, "entities": e, "relations": r}
+        if namespace:
+            out["namespace"] = namespace
+        return out
 
     def close(self):
         self._driver.close()

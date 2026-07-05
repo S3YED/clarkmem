@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cognify-kg"
-version = "0.3.0"
+version = "0.4.0"
 description = "Lightweight document-ingestion + typed knowledge-graph engine for agents"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -34,3 +34,11 @@ cognify-serve = "cognify.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+# E702: the CLI/arg-wiring deliberately uses compact `stmt; stmt` one-liners
+ignore = ["E702", "E731", "E741"]

@@ -10,8 +10,6 @@ from __future__ import annotations
 import json
 import re
 import threading
-from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
@@ -125,28 +123,76 @@ class LocalBackend:
             cn = f"chunk::{cid}"
             if g.has_node(cn):
                 ent_ids.update(p for p in g.predecessors(cn) if g.nodes[p].get("kind") == "entity")
-        entities = [{"id": e, "name": g.nodes[e].get("name"), "etype": g.nodes[e].get("etype")}
-                    for e in ent_ids]
-        relations = []
-        for e in ent_ids:
-            for _, tgt, d in g.out_edges(e, data=True):
-                if d.get("rel") == "REL":
+        # BFS over REL edges: hop 1 = relations out of the hit entities, each
+        # further hop follows the objects discovered on the previous hop.
+        visited, frontier, relations = set(ent_ids), set(ent_ids), []
+        for _ in range(max(1, min(hops, 3))):
+            nxt = set()
+            for e in frontier:
+                for _, tgt, d in g.out_edges(e, data=True):
+                    if d.get("rel") != "REL":
+                        continue
                     relations.append({"subject": g.nodes[e].get("name"), "predicate": d.get("type"),
                                       "object": g.nodes[tgt].get("name")})
+                    if tgt not in visited:
+                        nxt.add(tgt)
+            visited |= nxt
+            frontier = nxt
+            if not frontier or len(relations) >= 200:
+                break
+        # hop-1 keeps the classic contract: entities = the chunks' own mentions;
+        # deeper hops also surface the entities discovered along the paths.
+        shown = ent_ids | (visited - ent_ids if max(1, min(hops, 3)) > 1 else set())
+        entities = [{"id": e, "name": g.nodes[e].get("name"), "etype": g.nodes[e].get("etype")}
+                    for e in shown if g.nodes[e].get("kind") == "entity"][:100]
         return {"entities": entities, "relations": relations[:200]}
 
-    def stats(self, *, tenant):
+    def delete_document(self, doc_id, *, tenant):
+        """Remove a document, its chunks/vectors, and any entities left with no
+        remaining MENTIONED_IN edge (their REL edges go with them)."""
+        with self._lock:
+            col = self._collection(tenant)
+            try:
+                col.delete(where={"doc_id": doc_id})
+            except Exception:
+                pass
+            g = self._load_graph(tenant)
+            chunks = [n for n, d in g.nodes(data=True)
+                      if d.get("kind") == "chunk" and d.get("doc_id") == doc_id]
+            g.remove_nodes_from(chunks)
+            if g.has_node(f"doc::{doc_id}"):
+                g.remove_node(f"doc::{doc_id}")
+            orphans = [n for n, d in g.nodes(data=True) if d.get("kind") == "entity"
+                       and not any(g.nodes[t].get("kind") == "chunk" for t in g.successors(n))]
+            g.remove_nodes_from(orphans)
+            self._save_graph(tenant)
+            return {"doc_id": doc_id, "chunks_deleted": len(chunks), "entities_pruned": len(orphans)}
+
+    def stats(self, *, tenant, namespace=None):
+        """Counts for a tenant. With namespace: documents/chunks are filtered
+        (entities/relations stay tenant-wide — they merge across namespaces)."""
         g = self._load_graph(tenant) if tenant else None
         col = self._collection(tenant) if tenant else None
         kinds = {"document": 0, "chunk": 0, "entity": 0}
-        rels = 0
+        rels, ns_docs = 0, set()
         if g is not None:
             for _, d in g.nodes(data=True):
-                if d.get("kind") in kinds:
-                    kinds[d["kind"]] += 1
+                k = d.get("kind")
+                if k not in kinds:
+                    continue
+                if namespace and k == "chunk":
+                    if d.get("namespace") == namespace:
+                        kinds["chunk"] += 1
+                        ns_docs.add(d.get("doc_id"))
+                elif not namespace or k == "entity":
+                    kinds[k] += 1
             rels = sum(1 for *_e, d in g.edges(data=True) if d.get("rel") == "REL")
-        return {"documents": kinds["document"], "chunks": kinds["chunk"], "entities": kinds["entity"],
-                "relations": rels, "vectors": col.count() if col is not None else 0}
+        docs = len(ns_docs) if namespace else kinds["document"]
+        out = {"documents": docs, "chunks": kinds["chunk"], "entities": kinds["entity"],
+               "relations": rels, "vectors": col.count() if col is not None else 0}
+        if namespace:
+            out["namespace"] = namespace
+        return out
 
     def close(self):
         pass
