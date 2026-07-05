@@ -94,6 +94,31 @@ def test_fastembed_provider_normalized(monkeypatch):
     assert np.allclose(np.linalg.norm(v, axis=1), 1.0, atol=1e-3)
 
 
+def test_server_auth(monkeypatch):
+    try:
+        from fastapi.testclient import TestClient
+    except ImportError:
+        import pytest
+        pytest.skip("fastapi not installed")
+    from cognify import server
+
+    class StubBackend:
+        def stats(self, *, tenant=None):
+            return {"documents": 0}
+
+    monkeypatch.setattr(server, "_backend", StubBackend())
+    monkeypatch.setenv("COGNIFY_API_KEY", "sekrit")
+    c = TestClient(server.app)
+    assert c.get("/health").status_code == 200                    # always open
+    assert c.get("/stats").status_code == 401                     # no key
+    assert c.get("/stats", headers={"x-api-key": "wrong"}).status_code == 401
+    assert c.get("/stats", headers={"x-api-key": "sekrit"}).status_code == 200
+    assert c.post("/recall", json={"query": "x"},
+                  headers={"x-api-key": "wrong"}).status_code == 401
+    monkeypatch.delenv("COGNIFY_API_KEY")
+    assert c.get("/stats").status_code == 200                     # unset = open
+
+
 def test_local_e2e():
     if not (os.environ.get("COGNIFY_LLM_KEY") or os.environ.get("OPENROUTER_API_KEY")):
         import pytest

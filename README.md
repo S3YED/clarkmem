@@ -116,12 +116,12 @@ curl -s localhost:8799/recall -d '{"query":"refund policy?","tenant":"acme"}' -H
 ```
 
 For a fleet-shared server, bind loopback + your VPN/tailnet IP (comma-separated;
-never 0.0.0.0) and go torch-free with the ONNX embedder:
+never 0.0.0.0), gate it with an API key, and go torch-free with the ONNX embedder:
 ```bash
 pip install 'cognify-kg[neo4j,serve,fastembed]'
 export COGNIFY_BACKEND=neo4j COGNIFY_EMBED_PROVIDER=fastembed
-export COGNIFY_HOST=127.0.0.1,100.x.y.z
-cognify-serve
+export COGNIFY_HOST=127.0.0.1,100.x.y.z COGNIFY_API_KEY=$(openssl rand -hex 24)
+cognify-serve   # /health stays open; everything else needs x-api-key
 ```
 
 Bulk ingest is network-bound on the extractor; parallelize it with

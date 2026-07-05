@@ -8,10 +8,13 @@ Env:  COGNIFY_HOST (comma-separated for multi-bind), COGNIFY_PORT, COGNIFY_BACKE
       plus the usual LLM/Neo4j vars.
 
 Endpoints:
-  GET  /health
-  POST /ingest   {text|path, tenant, namespace, agent, extract}
+  GET  /health   (always open — for watchdogs)
+  POST /ingest   {text|path, title, tenant, namespace, agent, extract, workers}
   POST /recall   {query, tenant, namespace, k}
   GET  /stats?tenant=
+
+Auth: set COGNIFY_API_KEY to require an x-api-key header on every endpoint
+except /health. Unset = open (loopback-only single-user setups).
 """
 from __future__ import annotations
 
@@ -20,7 +23,7 @@ import os
 import cognify
 
 try:
-    from fastapi import FastAPI, HTTPException, Query
+    from fastapi import FastAPI, Header, HTTPException, Query
 except ImportError as e:  # pragma: no cover
     raise SystemExit("FastAPI not installed. Run: pip install 'cognify-kg[serve]'") from e
 
@@ -35,6 +38,14 @@ def _be():
     return _backend
 
 
+def _auth(key: str | None):
+    """Constant-time key check when COGNIFY_API_KEY is set; no-op when unset."""
+    import hmac
+    want = os.environ.get("COGNIFY_API_KEY")
+    if want and not (key and hmac.compare_digest(key, want)):
+        raise HTTPException(401, "invalid or missing x-api-key")
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "backend": os.environ.get("COGNIFY_BACKEND", "local"),
@@ -42,7 +53,8 @@ def health():
 
 
 @app.post("/ingest")
-def ingest(body: dict):
+def ingest(body: dict, x_api_key: str | None = Header(None)):
+    _auth(x_api_key)
     text = body.get("text") or body.get("path")
     if not text:
         raise HTTPException(400, "provide 'text' or 'path'")
@@ -59,7 +71,8 @@ def ingest(body: dict):
 
 
 @app.post("/recall")
-def recall(body: dict):
+def recall(body: dict, x_api_key: str | None = Header(None)):
+    _auth(x_api_key)
     q = body.get("query")
     if not q:
         raise HTTPException(400, "provide 'query'")
@@ -73,7 +86,8 @@ def recall(body: dict):
 
 
 @app.get("/stats")
-def stats(tenant: str = Query(None)):
+def stats(tenant: str = Query(None), x_api_key: str | None = Header(None)):
+    _auth(x_api_key)
     return _be().stats(tenant=tenant)
 
 
