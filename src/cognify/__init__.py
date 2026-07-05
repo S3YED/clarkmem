@@ -11,4 +11,4 @@ Quickstart:
 from .core import ingest, recall, embed, get_model, IngestResult, RecallResult  # noqa: F401
 from .backends import get_backend  # noqa: F401
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
