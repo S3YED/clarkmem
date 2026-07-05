@@ -30,6 +30,7 @@ _SYSTEM = (
     "Rules: canonical entity names (no pronouns/articles), deduplicate, predicates "
     "are short verbs like WORKS_AT/USES/BUILT/OWNS/PART_OF/LOCATED_IN/DEPENDS_ON/"
     "PRODUCES. Only relations whose subject AND object both appear in entities. "
+    "Never extract bare dates, timestamps, file paths, or numbers as entities. "
     "If nothing meaningful, return empty arrays."
 )
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
