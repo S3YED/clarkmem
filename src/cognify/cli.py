@@ -23,7 +23,8 @@ def cmd_ingest(a):
     be = cognify.get_backend(a.backend)
     text = sys.stdin.read() if a.path == "-" else a.path
     r = cognify.ingest(be, text, tenant=a.tenant, namespace=a.namespace, agent=a.agent,
-                       is_path=(a.path != "-"), do_extract=not a.no_extract)
+                       is_path=(a.path != "-"), do_extract=not a.no_extract,
+                       workers=a.workers or None)
     print(json.dumps(r.__dict__, indent=2)); be.close()
 
 
@@ -50,7 +51,7 @@ def cmd_ingest_dir(a):
                 continue
         try:
             r = cognify.ingest(be, str(p), tenant=a.tenant, namespace=a.namespace, agent=a.agent,
-                               is_path=True, do_extract=not a.no_extract)
+                               is_path=True, do_extract=not a.no_extract, workers=a.workers or None)
             tot["docs"] += 1; tot["chunks"] += r.chunks
             tot["entities"] += r.entities; tot["relations"] += r.relations
             if a.cache:
@@ -91,8 +92,8 @@ def main():
     p.add_argument("--namespace", default="default")
     p.add_argument("--agent", default="agent")
     sub = p.add_subparsers(dest="cmd", required=True)
-    s = sub.add_parser("ingest"); s.add_argument("path"); s.add_argument("--no-extract", action="store_true"); s.set_defaults(fn=cmd_ingest)
-    s = sub.add_parser("ingest-dir"); s.add_argument("path"); s.add_argument("--glob", default="**/*.md"); s.add_argument("--limit", type=int, default=0); s.add_argument("--no-extract", action="store_true"); s.add_argument("--cache", action="store_true"); s.set_defaults(fn=cmd_ingest_dir)
+    s = sub.add_parser("ingest"); s.add_argument("path"); s.add_argument("--no-extract", action="store_true"); s.add_argument("--workers", type=int, default=0); s.set_defaults(fn=cmd_ingest)
+    s = sub.add_parser("ingest-dir"); s.add_argument("path"); s.add_argument("--glob", default="**/*.md"); s.add_argument("--limit", type=int, default=0); s.add_argument("--no-extract", action="store_true"); s.add_argument("--cache", action="store_true"); s.add_argument("--workers", type=int, default=0); s.set_defaults(fn=cmd_ingest_dir)
     s = sub.add_parser("recall"); s.add_argument("query"); s.add_argument("-k", type=int, default=8); s.set_defaults(fn=cmd_recall)
     s = sub.add_parser("stats"); s.set_defaults(fn=cmd_stats)
     a = p.parse_args(); a.fn(a)

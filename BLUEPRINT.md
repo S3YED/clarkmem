@@ -54,14 +54,17 @@ to `". "` when past the halfway point. Drop pieces < 40 chars.
 
 ## Step 4 — `core.py` (orchestration)
 
-- `embed(texts)` via sentence-transformers singleton (384d, normalized).
+- `embed(texts)` via a lazy singleton (384d, L2-normalized). Provider from
+  `COGNIFY_EMBED_PROVIDER`: `st` (sentence-transformers, default) or `fastembed`
+  (ONNX, torch-free) — identical output space.
 - `_embed_texts(backend, texts)`: use `backend.embed_texts` if present, else
   `embed`.
 - `Backend` Protocol: `load_document(doc,*,tenant,namespace,agent,chunk_vecs,
   extractions)`, `search(qvec,*,tenant,namespace,k)->list[dict]`,
   `expand(chunk_ids,*,tenant,hops)->{entities,relations}`, `stats(*,tenant)`.
 - `ingest(backend, path_or_text, *, tenant, namespace, agent, is_path, title,
-  do_extract=True)`: load → embed chunks → per-chunk extract (catch+log failures)
+  do_extract=True, workers=None)`: load → embed chunks → per-chunk extract
+  (catch+log failures; thread pool when `workers or COGNIFY_EXTRACT_WORKERS` > 1)
   → `backend.load_document` → `IngestResult`.
 - `recall(backend, query, *, tenant, namespace, k=8, hops=1)`: embed query →
   `backend.search` → `backend.expand` on hit chunk ids → `RecallResult(chunks,
@@ -93,7 +96,8 @@ Entity id = `f"{tenant}::{name.lower()}::{type}"`. Every node carries `tenant` +
 ## Step 6 — `cli.py`
 
 `cognify {ingest,ingest-dir,recall,stats}` with `--backend/--tenant/--namespace/
---agent`. `ingest-dir` takes `--glob`, `--limit`, `--no-extract`, and `--cache`
+--agent`. Both ingest commands take `--workers`. `ingest-dir` takes `--glob`,
+`--limit`, `--no-extract`, and `--cache`
 (skip files whose sha256 is unchanged since last run; cache at
 `DATA_DIR/cache/ingest-<tenant>.json`). Console script entry in `pyproject.toml`.
 

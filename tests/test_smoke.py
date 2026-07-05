@@ -28,6 +28,72 @@ def test_parse_drops_ungrounded_relations():
     assert ex.relations == ()  # object not in entities -> dropped
 
 
+def test_parallel_extraction_matches_serial(monkeypatch):
+    import numpy as np
+    from cognify import core
+    from cognify.extractor import Entity
+
+    def fake_extract(text, **kw):
+        return Extraction(entities=(Entity(name=text[:8], type="Concept"),), relations=())
+
+    monkeypatch.setattr(core._ex, "extract", fake_extract)
+
+    class FakeBackend:
+        def embed_texts(self, texts):
+            return np.zeros((len(texts), 384), dtype=np.float32)
+
+        def load_document(self, doc, **kw):
+            self.extractions = kw["extractions"]
+
+    text = "# A\n" + "alpha " * 700 + "\n# B\n" + "beta " * 700
+    serial_be, par_be = FakeBackend(), FakeBackend()
+    r1 = core.ingest(serial_be, text, is_path=False, workers=1)
+    r2 = core.ingest(par_be, text, is_path=False, workers=4)
+    assert r1.chunks == r2.chunks > 1
+    assert r1.entities == r2.entities == r1.chunks  # one stub entity per chunk
+    assert serial_be.extractions.keys() == par_be.extractions.keys()
+
+
+def test_parallel_extraction_degrades_per_chunk(monkeypatch):
+    import numpy as np
+    from cognify import core
+    from cognify.extractor import Entity
+
+    def flaky_extract(text, **kw):
+        if "beta" in text:
+            raise RuntimeError("boom")
+        return Extraction(entities=(Entity(name="A", type="Concept"),), relations=())
+
+    monkeypatch.setattr(core._ex, "extract", flaky_extract)
+
+    class FakeBackend:
+        def embed_texts(self, texts):
+            return np.zeros((len(texts), 384), dtype=np.float32)
+
+        def load_document(self, doc, **kw):
+            pass
+
+    r = core.ingest(FakeBackend(), "# A\n" + "alpha " * 700 + "\n# B\n" + "beta " * 700,
+                    is_path=False, workers=4)
+    assert r.chunks > 1 and 0 < r.entities < r.chunks  # failures degraded, not raised
+
+
+def test_fastembed_provider_normalized(monkeypatch):
+    try:
+        import fastembed  # noqa: F401
+    except ImportError:
+        import pytest
+        pytest.skip("fastembed not installed")
+    import numpy as np
+    from cognify import config, core
+    monkeypatch.setattr(config, "EMBED_PROVIDER", "fastembed")
+    monkeypatch.setattr(core, "_model", None)
+    v = core.embed(["hello world", "knowledge graphs connect facts"])
+    core._model = None  # do not leak the singleton into other tests
+    assert v.shape == (2, 384) and v.dtype == np.float32
+    assert np.allclose(np.linalg.norm(v, axis=1), 1.0, atol=1e-3)
+
+
 def test_local_e2e():
     if not (os.environ.get("COGNIFY_LLM_KEY") or os.environ.get("OPENROUTER_API_KEY")):
         import pytest

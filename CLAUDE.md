@@ -60,6 +60,9 @@ On Homebrew macOS, `config.py` auto-sets `DYLD_LIBRARY_PATH` to brew's expat so
 
 - New file type → `loader.read_file()`.
 - Different LLM/endpoint → env only (`COGNIFY_LLM_*`), no code change.
+- Server/bulk knobs (env only): `COGNIFY_EMBED_PROVIDER=fastembed` (torch-free
+  server embedder, same 384d space), `COGNIFY_EXTRACT_WORKERS` / `--workers`
+  (parallel extraction), `COGNIFY_HOST=127.0.0.1,<vpn-ip>` (multi-bind serve).
 - New vector/graph store → new file in `backends/`, register in `backends/__init__.py`,
   implement the four `Backend` methods (+ optional `embed_texts`).
 - Richer retrieval (multi-hop, rerank) → `core.recall()` and `backend.expand()`.

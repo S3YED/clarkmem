@@ -4,7 +4,8 @@ agent runtime (Hermes, n8n, a shell, another service) can ingest and recall
 without a Python import.
 
 Run:  cognify-serve              (defaults to 127.0.0.1:8799)
-Env:  COGNIFY_HOST, COGNIFY_PORT, COGNIFY_BACKEND, plus the usual LLM/Neo4j vars.
+Env:  COGNIFY_HOST (comma-separated for multi-bind), COGNIFY_PORT, COGNIFY_BACKEND,
+      plus the usual LLM/Neo4j vars.
 
 Endpoints:
   GET  /health
@@ -46,11 +47,12 @@ def ingest(body: dict):
     if not text:
         raise HTTPException(400, "provide 'text' or 'path'")
     try:
+        workers = min(int(body["workers"]), 32) if body.get("workers") else None
         r = cognify.ingest(_be(), text, tenant=body.get("tenant", "default"),
                            namespace=body.get("namespace", "default"),
                            agent=body.get("agent", "agent"),
                            is_path=bool(body.get("path")),
-                           do_extract=body.get("extract", True))
+                           do_extract=body.get("extract", True), workers=workers)
         return r.__dict__
     except Exception as e:
         raise HTTPException(500, f"ingest failed: {e}")
@@ -76,9 +78,17 @@ def stats(tenant: str = Query(None)):
 
 
 def main():
+    import threading
+
     import uvicorn
-    uvicorn.run(app, host=os.environ.get("COGNIFY_HOST", "127.0.0.1"),
-                port=int(os.environ.get("COGNIFY_PORT", "8799")), log_level="info")
+    port = int(os.environ.get("COGNIFY_PORT", "8799"))
+    # COGNIFY_HOST may be comma-separated (e.g. "127.0.0.1,100.x.y.z") to bind
+    # loopback + a VPN/tailnet IP without ever exposing 0.0.0.0.
+    hosts = [h.strip() for h in os.environ.get("COGNIFY_HOST", "127.0.0.1").split(",") if h.strip()]
+    for h in hosts[1:]:
+        threading.Thread(target=lambda hh=h: uvicorn.run(app, host=hh, port=port,
+                                                         log_level="warning"), daemon=True).start()
+    uvicorn.run(app, host=hosts[0], port=port, log_level="info")
 
 
 if __name__ == "__main__":

@@ -24,6 +24,14 @@ DATA_DIR = Path(os.environ.get("COGNIFY_DATA_DIR", str(Path.home() / ".cognify")
 # --- embedding model --------------------------------------------------------
 EMBED_MODEL = os.environ.get("COGNIFY_EMBED_MODEL", "all-MiniLM-L6-v2")
 EMBED_DIM = int(os.environ.get("COGNIFY_EMBED_DIM", "384"))
+# Provider for the shared embedder: "st" (sentence-transformers) or "fastembed"
+# (ONNX, torch-free — fits small server boxes). Both emit the same L2-normalized
+# 384d space, so indexes built under one are queryable under the other.
+EMBED_PROVIDER = os.environ.get("COGNIFY_EMBED_PROVIDER", "st").lower()
+
+# --- ingest -----------------------------------------------------------------
+# Parallel per-chunk extraction (the LLM call is network-bound). 1 = serial.
+EXTRACT_WORKERS = max(1, int(os.environ.get("COGNIFY_EXTRACT_WORKERS", "1")))
 
 # --- LLM extractor ----------------------------------------------------------
 # Provider: "openai" (any OpenAI-compatible /chat/completions: OpenRouter, OpenAI,

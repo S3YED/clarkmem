@@ -115,6 +115,18 @@ cognify-serve                      # 127.0.0.1:8799
 curl -s localhost:8799/recall -d '{"query":"refund policy?","tenant":"acme"}' -H 'content-type: application/json'
 ```
 
+For a fleet-shared server, bind loopback + your VPN/tailnet IP (comma-separated;
+never 0.0.0.0) and go torch-free with the ONNX embedder:
+```bash
+pip install 'cognify-kg[neo4j,serve,fastembed]'
+export COGNIFY_BACKEND=neo4j COGNIFY_EMBED_PROVIDER=fastembed
+export COGNIFY_HOST=127.0.0.1,100.x.y.z
+cognify-serve
+```
+
+Bulk ingest is network-bound on the extractor; parallelize it with
+`--workers 8` (or `COGNIFY_EXTRACT_WORKERS`) and use `--cache` for cheap re-runs.
+
 ## Multi-tenancy
 
 Every node carries a `tenant` (and `namespace`). Pass a different `tenant` per
@@ -149,7 +161,9 @@ export COGNIFY_LLM_KEY=ollama        # any non-empty string
 ## Configuration
 
 All via env (see `.env.example`): `COGNIFY_BACKEND`, `COGNIFY_DATA_DIR`,
-`COGNIFY_LLM_BASE/MODEL/KEY`, `COGNIFY_LLM_PROVIDER`, `NEO4J_URI/USER/PASSWORD`.
+`COGNIFY_LLM_BASE/MODEL/KEY`, `COGNIFY_LLM_PROVIDER`, `COGNIFY_EMBED_PROVIDER`
+(`st` | `fastembed`), `COGNIFY_EXTRACT_WORKERS`, `COGNIFY_HOST/PORT`,
+`NEO4J_URI/USER/PASSWORD`.
 The LLM endpoint is OpenAI-compatible (OpenRouter, OpenAI, vLLM, Ollama) or native
 Anthropic (Claude). See the model table above.
 
