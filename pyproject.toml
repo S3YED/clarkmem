@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cognify-kg"
-version = "0.4.0"
+version = "0.5.0"
 description = "Lightweight document-ingestion + typed knowledge-graph engine for agents"
 readme = "README.md"
 requires-python = ">=3.10"

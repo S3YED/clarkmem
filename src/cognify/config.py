@@ -68,6 +68,19 @@ def llm_key() -> str | None:
     return os.environ.get(LLM_KEY_ENV)
 
 
+# --- HTTP server hardening ---------------------------------------------------
+def ingest_root() -> str | None:
+    """Directory under which server-side {"path": ...} ingestion is allowed.
+    None (unset) = path ingestion over HTTP is disabled. Read per request so
+    it can be changed without a code reload (and monkeypatched in tests)."""
+    return os.environ.get("COGNIFY_INGEST_ROOT")
+
+
+def max_text() -> int:
+    """Cap on HTTP text bodies, in characters."""
+    return int(os.environ.get("COGNIFY_MAX_TEXT", "2000000"))
+
+
 # --- Neo4j (fleet backend only) --------------------------------------------
 def neo4j_creds() -> dict:
     """Read Neo4j creds from env. Optionally seed from a dotenv-style file named

@@ -13,7 +13,9 @@ traversal. Retrieval starts in the vector layer and expands into the graph.
 Document ──PART_OF◄── Chunk ◄──MENTIONED_IN── Entity ──REL{type}──► Entity
 ```
 
-- **Document**: one source file/string. id = sha256(source + first 512 chars)[:16].
+- **Document**: one source file/string. Files: id = sha256(source + first 512
+  chars)[:16], so edits update the same doc in place. Inline text: id =
+  sha256(full text)[:16], so distinct notes sharing a preamble never collide.
 - **Chunk**: heading-aware ~512-token slice. id = `{doc_id}_{ord}`. Carries the
   embedding.
 - **Entity**: canonical typed node. id = `{tenant}::{name.lower}::{type}` so the
@@ -57,8 +59,10 @@ graph built on one is queryable by the other.
 - **local**: ChromaDB persistent collection per tenant + a networkx DiGraph
   persisted as JSON. Zero external services. For agent boxes and laptops.
 - **neo4j**: TurboVec `IdMapIndex` per tenant on disk + Neo4j with C-prefixed
-  labels (so it coexists with other graphs in the same database). For a shared
-  fleet/server graph at scale.
+  labels (so it coexists with other graphs in the same database). Document and
+  chunk nodes are keyed `(id, tenant)` — ids are content-derived, so two tenants
+  ingesting the same document must get separate nodes. For a shared fleet/server
+  graph at scale.
 
 ## Boundaries & failure modes
 

@@ -24,6 +24,12 @@ def _entity_id(tenant: str, name: str, etype: str) -> str:
     return f"{tenant}::{name.lower().strip()}::{etype}"
 
 
+def _orphan_entities(g) -> list:
+    """Entity nodes with no remaining MENTIONED_IN edge to any chunk."""
+    return [n for n, d in g.nodes(data=True) if d.get("kind") == "entity"
+            and not any(g.nodes[t].get("kind") == "chunk" for t in g.successors(n))]
+
+
 class LocalBackend:
     def __init__(self):
         import chromadb
@@ -78,6 +84,13 @@ class LocalBackend:
                            for c in doc.chunks],
             )
             g = self._load_graph(tenant)
+            # idempotent re-ingest: drop graph chunks from a previous, longer
+            # version of this doc (vectors were already replaced above), then
+            # prune entities that lose their last mention (same as neo4j backend)
+            keep = {f"chunk::{c.id}" for c in doc.chunks}
+            stale = [n for n, d in g.nodes(data=True) if d.get("kind") == "chunk"
+                     and d.get("doc_id") == doc.id and n not in keep]
+            g.remove_nodes_from(stale)
             g.add_node(f"doc::{doc.id}", kind="document", title=doc.title, source=doc.source)
             for c in doc.chunks:
                 g.add_node(f"chunk::{c.id}", kind="chunk", doc_id=c.doc_id, namespace=namespace)
@@ -94,15 +107,20 @@ class LocalBackend:
                     sid, oid = n2i.get(r.subject.lower()), n2i.get(r.object.lower())
                     if sid and oid and sid != oid:
                         g.add_edge(sid, oid, rel="REL", type=r.predicate, doc_id=doc.id)
+            if stale:
+                g.remove_nodes_from(_orphan_entities(g))
             self._save_graph(tenant)
 
     def search(self, qvec, *, tenant, namespace, k):
-        col = self._collection(tenant)
-        try:
-            res = col.query(query_embeddings=[np.asarray(qvec, dtype=np.float32)[0].tolist()],
-                            n_results=k, where={"namespace": namespace} if namespace else None)
-        except Exception:
-            return []
+        # the lock also guards readers: ingest mutates the cached graph/collection
+        # in place, and the HTTP server calls this from a thread pool
+        with self._lock:
+            col = self._collection(tenant)
+            try:
+                res = col.query(query_embeddings=[np.asarray(qvec, dtype=np.float32)[0].tolist()],
+                                n_results=k, where={"namespace": namespace} if namespace else None)
+            except Exception:
+                return []
         ids = (res.get("ids") or [[]])[0]
         docs = (res.get("documents") or [[]])[0]
         metas = (res.get("metadatas") or [[]])[0]
@@ -117,35 +135,38 @@ class LocalBackend:
         return out
 
     def expand(self, chunk_ids, *, tenant, hops):
-        g = self._load_graph(tenant)
-        ent_ids = set()
-        for cid in chunk_ids:
-            cn = f"chunk::{cid}"
-            if g.has_node(cn):
-                ent_ids.update(p for p in g.predecessors(cn) if g.nodes[p].get("kind") == "entity")
-        # BFS over REL edges: hop 1 = relations out of the hit entities, each
-        # further hop follows the objects discovered on the previous hop.
-        visited, frontier, relations = set(ent_ids), set(ent_ids), []
-        for _ in range(max(1, min(hops, 3))):
-            nxt = set()
-            for e in frontier:
-                for _, tgt, d in g.out_edges(e, data=True):
-                    if d.get("rel") != "REL":
-                        continue
-                    relations.append({"subject": g.nodes[e].get("name"), "predicate": d.get("type"),
-                                      "object": g.nodes[tgt].get("name")})
-                    if tgt not in visited:
-                        nxt.add(tgt)
-            visited |= nxt
-            frontier = nxt
-            if not frontier or len(relations) >= 200:
-                break
-        # hop-1 keeps the classic contract: entities = the chunks' own mentions;
-        # deeper hops also surface the entities discovered along the paths.
-        shown = ent_ids | (visited - ent_ids if max(1, min(hops, 3)) > 1 else set())
-        entities = [{"id": e, "name": g.nodes[e].get("name"), "etype": g.nodes[e].get("etype")}
-                    for e in shown if g.nodes[e].get("kind") == "entity"][:100]
-        return {"entities": entities, "relations": relations[:200]}
+        with self._lock:
+            g = self._load_graph(tenant)
+            ent_ids = set()
+            for cid in chunk_ids:
+                cn = f"chunk::{cid}"
+                if g.has_node(cn):
+                    ent_ids.update(p for p in g.predecessors(cn)
+                                   if g.nodes[p].get("kind") == "entity")
+            # BFS over REL edges: hop 1 = relations out of the hit entities, each
+            # further hop follows the objects discovered on the previous hop.
+            visited, frontier, relations = set(ent_ids), set(ent_ids), []
+            for _ in range(max(1, min(hops, 3))):
+                nxt = set()
+                for e in frontier:
+                    for _, tgt, d in g.out_edges(e, data=True):
+                        if d.get("rel") != "REL":
+                            continue
+                        relations.append({"subject": g.nodes[e].get("name"),
+                                          "predicate": d.get("type"),
+                                          "object": g.nodes[tgt].get("name")})
+                        if tgt not in visited:
+                            nxt.add(tgt)
+                visited |= nxt
+                frontier = nxt
+                if not frontier or len(relations) >= 200:
+                    break
+            # hop-1 keeps the classic contract: entities = the chunks' own mentions;
+            # deeper hops also surface the entities discovered along the paths.
+            shown = ent_ids | (visited - ent_ids if max(1, min(hops, 3)) > 1 else set())
+            entities = [{"id": e, "name": g.nodes[e].get("name"), "etype": g.nodes[e].get("etype")}
+                        for e in shown if g.nodes[e].get("kind") == "entity"][:100]
+            return {"entities": entities, "relations": relations[:200]}
 
     def delete_document(self, doc_id, *, tenant):
         """Remove a document, its chunks/vectors, and any entities left with no
@@ -162,20 +183,23 @@ class LocalBackend:
             g.remove_nodes_from(chunks)
             if g.has_node(f"doc::{doc_id}"):
                 g.remove_node(f"doc::{doc_id}")
-            orphans = [n for n, d in g.nodes(data=True) if d.get("kind") == "entity"
-                       and not any(g.nodes[t].get("kind") == "chunk" for t in g.successors(n))]
+            orphans = _orphan_entities(g)
             g.remove_nodes_from(orphans)
             self._save_graph(tenant)
             return {"doc_id": doc_id, "chunks_deleted": len(chunks), "entities_pruned": len(orphans)}
 
     def stats(self, *, tenant, namespace=None):
         """Counts for a tenant. With namespace: documents/chunks are filtered
-        (entities/relations stay tenant-wide — they merge across namespaces)."""
-        g = self._load_graph(tenant) if tenant else None
-        col = self._collection(tenant) if tenant else None
+        (entities/relations stay tenant-wide — they merge across namespaces).
+        Without a tenant: global counts across every tenant on this box (same
+        meaning as the neo4j backend, so /stats behaves identically)."""
+        if not tenant:
+            return self._stats_all()
         kinds = {"document": 0, "chunk": 0, "entity": 0}
         rels, ns_docs = 0, set()
-        if g is not None:
+        with self._lock:
+            g = self._load_graph(tenant)
+            col = self._collection(tenant)
             for _, d in g.nodes(data=True):
                 k = d.get("kind")
                 if k not in kinds:
@@ -187,11 +211,37 @@ class LocalBackend:
                 elif not namespace or k == "entity":
                     kinds[k] += 1
             rels = sum(1 for *_e, d in g.edges(data=True) if d.get("rel") == "REL")
+            vectors = col.count()
         docs = len(ns_docs) if namespace else kinds["document"]
         out = {"documents": docs, "chunks": kinds["chunk"], "entities": kinds["entity"],
-               "relations": rels, "vectors": col.count() if col is not None else 0}
+               "relations": rels, "vectors": vectors}
         if namespace:
             out["namespace"] = namespace
+        return out
+
+    def _stats_all(self):
+        """Global counts: read every tenant's persisted graph + collection."""
+        out = {"documents": 0, "chunks": 0, "entities": 0, "relations": 0, "vectors": 0}
+        with self._lock:
+            for p in sorted(self.root.glob("graph-*.json")):
+                try:
+                    data = json.loads(p.read_text())
+                except Exception:
+                    continue
+                for n in data.get("nodes", []):
+                    k = n.get("kind")
+                    if k == "document":
+                        out["documents"] += 1
+                    elif k == "chunk":
+                        out["chunks"] += 1
+                    elif k == "entity":
+                        out["entities"] += 1
+                out["relations"] += sum(1 for e in data.get("links", []) if e.get("rel") == "REL")
+            for col in self._client.list_collections():  # objects pre-0.6, names after
+                name = getattr(col, "name", col)
+                if str(name).startswith("cognify_"):
+                    c = col if hasattr(col, "count") else self._client.get_collection(str(name))
+                    out["vectors"] += c.count()
         return out
 
     def close(self):

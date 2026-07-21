@@ -38,9 +38,12 @@ context for your answer.
 
 ```bash
 cognify-serve &      # 127.0.0.1:8799  (set COGNIFY_BACKEND=neo4j for a shared graph)
-curl -s localhost:8799/ingest -d '{"path":"/docs/policy.md","tenant":"myagent"}' -H 'content-type: application/json'
+curl -s localhost:8799/ingest -d '{"text":"the refund policy is 14 days","title":"policy","tenant":"myagent"}' -H 'content-type: application/json'
 curl -s localhost:8799/recall -d '{"query":"refund policy?","tenant":"myagent"}' -H 'content-type: application/json'
 ```
+
+Ingesting a server-side file over HTTP (`{"path": ...}`) requires the server to
+run with `COGNIFY_INGEST_ROOT=<dir>`; only files under that directory are read.
 
 ## Rules
 

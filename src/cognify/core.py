@@ -106,8 +106,12 @@ def _extract_all(chunks, workers: int) -> dict:
 
 def ingest(backend, path_or_text: str, *, tenant: str = "default", namespace: str = "default",
            agent: str = "agent", is_path: Optional[bool] = None, title: Optional[str] = None,
-           do_extract: bool = True, workers: Optional[int] = None) -> IngestResult:
-    doc = load(path_or_text, is_path=is_path, title=title)
+           key: Optional[str] = None, do_extract: bool = True,
+           workers: Optional[int] = None) -> IngestResult:
+    """key: optional stable identity for evolving inline notes — re-ingesting
+    with the same key updates the document in place instead of creating a new
+    content-addressed one."""
+    doc = load(path_or_text, is_path=is_path, title=title, key=key)
     if not doc.chunks:
         return IngestResult(doc.id, doc.title, tenant, namespace, 0, 0, 0, False)
 
@@ -128,6 +132,9 @@ def ingest(backend, path_or_text: str, *, tenant: str = "default", namespace: st
 
 def recall(backend, query: str, *, tenant: str = "default", namespace: Optional[str] = None,
            k: int = 8, hops: int = 1) -> RecallResult:
+    # single choke point for bounds — every entry point (CLI/HTTP/MCP) funnels here
+    k = max(1, min(int(k), 100))
+    hops = max(1, min(int(hops), 3))
     qvec = _embed_texts(backend, [query])
     chunks = backend.search(qvec, tenant=tenant, namespace=namespace, k=k)
     cids = [c["id"] for c in chunks]

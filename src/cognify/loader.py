@@ -38,8 +38,16 @@ class Document:
     chunks: tuple[Chunk, ...]
 
 
-def _doc_id(source: str, text: str) -> str:
-    return hashlib.sha256((source + "::" + text[:512]).encode()).hexdigest()[:16]
+def _doc_id(source: str, text: str, key: Optional[str] = None) -> str:
+    # An explicit key wins: stable identity for evolving notes (update in place).
+    # Files are keyed on source+head so edits update the same doc in place.
+    # Inline text is keyed on the FULL text: distinct notes sharing a >512-char
+    # preamble must not collide (ids for texts <= 512 chars are unchanged).
+    if key:
+        basis = "key::" + key
+    else:
+        basis = source + "::" + (text if source == "inline" else text[:512])
+    return hashlib.sha256(basis.encode()).hexdigest()[:16]
 
 
 def read_file(path: str) -> str:
@@ -84,9 +92,10 @@ def _subchunk(text: str) -> list[str]:
     return out
 
 
-def chunk_text(text: str, *, source: str = "inline", title: Optional[str] = None) -> Document:
+def chunk_text(text: str, *, source: str = "inline", title: Optional[str] = None,
+               key: Optional[str] = None) -> Document:
     text = _strip_frontmatter(text or "")
-    doc_id = _doc_id(source, text)
+    doc_id = _doc_id(source, text, key)
     if not title:
         title = Path(source).stem if source != "inline" else (text[:60].strip() or "untitled")
     chunks, ordinal = [], 0
@@ -101,10 +110,11 @@ def chunk_text(text: str, *, source: str = "inline", title: Optional[str] = None
     return Document(id=doc_id, title=title, source=source, chunks=tuple(chunks))
 
 
-def load(path_or_text: str, *, is_path: Optional[bool] = None, title: Optional[str] = None) -> Document:
+def load(path_or_text: str, *, is_path: Optional[bool] = None, title: Optional[str] = None,
+         key: Optional[str] = None) -> Document:
     if is_path is None:
         is_path = (len(path_or_text) < 1024 and "\n" not in path_or_text
                    and Path(path_or_text).exists())
     if is_path:
-        return chunk_text(read_file(path_or_text), source=path_or_text, title=title)
-    return chunk_text(path_or_text, source="inline", title=title)
+        return chunk_text(read_file(path_or_text), source=path_or_text, title=title, key=key)
+    return chunk_text(path_or_text, source="inline", title=title, key=key)

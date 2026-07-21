@@ -23,9 +23,9 @@ def _cache_path(tenant: str, namespace: str) -> Path:
 def cmd_ingest(a):
     be = cognify.get_backend(a.backend)
     text = sys.stdin.read() if a.path == "-" else a.path
-    r = cognify.ingest(be, text, tenant=a.tenant, namespace=a.namespace, agent=a.agent,
-                       is_path=(a.path != "-"), do_extract=not a.no_extract,
-                       workers=a.workers or None)
+    r = cognify.ingest(be, text, tenant=a.tenant, namespace=a.namespace or "default",
+                       agent=a.agent, is_path=(a.path != "-"), key=a.key or None,
+                       do_extract=not a.no_extract, workers=a.workers or None)
     print(json.dumps(r.__dict__, indent=2)); be.close()
 
 
@@ -34,13 +34,13 @@ def cmd_ingest_dir(a):
     files = sorted(p for p in Path(a.path).expanduser().glob(a.glob) if p.is_file())
     if a.limit:
         files = files[:a.limit]
-    cache, cpath = {}, _cache_path(a.tenant, a.namespace)
+    cache, cpath = {}, _cache_path(a.tenant, a.namespace or "default")
     if a.cache and cpath.exists():
         try:
             cache = json.loads(cpath.read_text())
         except Exception:
             cache = {}
-    print(f"ingesting {len(files)} files -> tenant={a.tenant} ns={a.namespace} "
+    print(f"ingesting {len(files)} files -> tenant={a.tenant} ns={a.namespace or 'default'} "
           f"extract={not a.no_extract} cache={a.cache}", flush=True)
     tot = {"docs": 0, "chunks": 0, "entities": 0, "relations": 0, "failed": 0, "skipped": 0}
     t0 = time.time()
@@ -51,8 +51,9 @@ def cmd_ingest_dir(a):
                 tot["skipped"] += 1
                 continue
         try:
-            r = cognify.ingest(be, str(p), tenant=a.tenant, namespace=a.namespace, agent=a.agent,
-                               is_path=True, do_extract=not a.no_extract, workers=a.workers or None)
+            r = cognify.ingest(be, str(p), tenant=a.tenant, namespace=a.namespace or "default",
+                               agent=a.agent, is_path=True, do_extract=not a.no_extract,
+                               workers=a.workers or None)
             tot["docs"] += 1; tot["chunks"] += r.chunks
             tot["entities"] += r.entities; tot["relations"] += r.relations
             if a.cache:
@@ -83,8 +84,7 @@ def cmd_recall(a):
 
 def cmd_stats(a):
     be = cognify.get_backend(a.backend)
-    ns = None if a.namespace == "default" else a.namespace
-    print(json.dumps(be.stats(tenant=a.tenant, namespace=ns), indent=2)); be.close()
+    print(json.dumps(be.stats(tenant=a.tenant, namespace=a.namespace), indent=2)); be.close()
 
 
 def cmd_forget(a):
@@ -96,10 +96,14 @@ def main():
     p = argparse.ArgumentParser(prog="cognify")
     p.add_argument("--backend", default=None, choices=["neo4j", "local"])
     p.add_argument("--tenant", default="default")
-    p.add_argument("--namespace", default="default")
+    # None so recall/stats span ALL namespaces unless one is asked for
+    # (ingest falls back to 'default'), and 'default' itself stays filterable
+    p.add_argument("--namespace", default=None,
+                   help="ingest into / filter by a namespace (ingest default: 'default'; "
+                        "recall/stats default: all namespaces)")
     p.add_argument("--agent", default="agent")
     sub = p.add_subparsers(dest="cmd", required=True)
-    s = sub.add_parser("ingest"); s.add_argument("path"); s.add_argument("--no-extract", action="store_true"); s.add_argument("--workers", type=int, default=0); s.set_defaults(fn=cmd_ingest)
+    s = sub.add_parser("ingest"); s.add_argument("path"); s.add_argument("--no-extract", action="store_true"); s.add_argument("--workers", type=int, default=0); s.add_argument("--key", default="", help="stable identity for an evolving note (re-ingest updates in place)"); s.set_defaults(fn=cmd_ingest)
     s = sub.add_parser("ingest-dir"); s.add_argument("path"); s.add_argument("--glob", default="**/*.md"); s.add_argument("--limit", type=int, default=0); s.add_argument("--no-extract", action="store_true"); s.add_argument("--cache", action="store_true"); s.add_argument("--workers", type=int, default=0); s.set_defaults(fn=cmd_ingest_dir)
     s = sub.add_parser("recall"); s.add_argument("query"); s.add_argument("-k", type=int, default=8); s.add_argument("--hops", type=int, default=1); s.set_defaults(fn=cmd_recall)
     s = sub.add_parser("forget"); s.add_argument("doc_id"); s.set_defaults(fn=cmd_forget)

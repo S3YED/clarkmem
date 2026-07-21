@@ -53,6 +53,12 @@ class Neo4jBackend:
             for lbl in (_DOC, _CHUNK, _ENT):
                 s.run(f"CREATE INDEX {lbl.lower()}_id IF NOT EXISTS FOR (n:{lbl}) ON (n.id)")
             s.run(f"CREATE INDEX {_ENT.lower()}_tenant IF NOT EXISTS FOR (n:{_ENT}) ON (n.tenant)")
+            # doc/chunk ids are content-derived and NOT tenant-prefixed, so nodes
+            # are keyed (id, tenant) — two tenants ingesting the same document
+            # must get separate nodes, never overwrite each other's.
+            for lbl in (_DOC, _CHUNK):
+                s.run(f"CREATE INDEX {lbl.lower()}_id_tenant IF NOT EXISTS "
+                      f"FOR (n:{lbl}) ON (n.id, n.tenant)")
 
     # -- per-tenant TurboVec index ----------------------------------------
     def _tenant_dir(self, tenant: str) -> Path:
@@ -97,10 +103,29 @@ class Neo4jBackend:
             if doc.chunks:
                 idx.add_with_ids(np.asarray(chunk_vecs, dtype=np.float32),
                                  np.asarray(ids, dtype=np.uint64))
+            # graph first — it also reports stale chunks from a previous, longer
+            # version of this doc. The index is saved once, after, so a graph
+            # failure leaves the persisted vectors untouched.
+            stale = self._write_graph(doc, tenant, namespace, agent, extractions)
+            self._drop_vectors(idx, meta, stale)
             self._save_index(tenant)
-            self._write_graph(doc, tenant, namespace, agent, extractions)
 
-    def _write_graph(self, doc, tenant, namespace, agent, extractions):
+    @staticmethod
+    def _drop_vectors(idx, meta, chunk_ids):
+        for cid in chunk_ids:
+            cint = _cid_int(cid)
+            try:
+                idx.remove(cint)
+            except Exception:
+                pass
+            meta.pop(cint, None)
+
+    def _prune_orphans(self, s, tenant) -> int:
+        """Delete this tenant's entities with no remaining mention anywhere."""
+        return s.run(f"MATCH (e:{_ENT} {{tenant:$t}}) WHERE NOT (e)-[:MENTIONED_IN]->() "
+                     "WITH e DETACH DELETE e RETURN count(*) AS n", t=tenant).single()["n"]
+
+    def _write_graph(self, doc, tenant, namespace, agent, extractions) -> list:
         ts = time.time()
         chunk_rows = [{"id": c.id, "doc_id": c.doc_id, "ord": c.ord, "heading": c.heading,
                        "text": c.text[:2000]} for c in doc.chunks]
@@ -120,13 +145,19 @@ class Neo4jBackend:
                 if sid and oid and sid != oid:
                     rel_rows.append({"sid": sid, "oid": oid, "type": r.predicate, "doc_id": doc.id})
         with self._driver.session() as s:
-            s.run(f"MERGE (d:{_DOC} {{id:$id}}) SET d.tenant=$t,d.namespace=$n,d.agent=$a,"
+            stale = [r["id"] for r in s.run(
+                f"MATCH (c:{_CHUNK} {{tenant:$t, doc_id:$d}}) WHERE NOT c.id IN $keep "
+                "RETURN c.id AS id", t=tenant, d=doc.id, keep=[c.id for c in doc.chunks])]
+            if stale:
+                s.run(f"MATCH (c:{_CHUNK} {{tenant:$t}}) WHERE c.id IN $ids DETACH DELETE c",
+                      t=tenant, ids=stale)
+            s.run(f"MERGE (d:{_DOC} {{id:$id, tenant:$t}}) SET d.namespace=$n,d.agent=$a,"
                   "d.title=$ti,d.source=$src,d.ts=$ts",
                   id=doc.id, t=tenant, n=namespace, a=agent, ti=doc.title, src=doc.source, ts=ts)
-            s.run(f"UNWIND $rows AS r MERGE (c:{_CHUNK} {{id:r.id}}) "
-                  "SET c.tenant=$t,c.namespace=$n,c.doc_id=r.doc_id,c.ord=r.ord,"
+            s.run(f"UNWIND $rows AS r MERGE (c:{_CHUNK} {{id:r.id, tenant:$t}}) "
+                  "SET c.namespace=$n,c.doc_id=r.doc_id,c.ord=r.ord,"
                   "c.heading=r.heading,c.text=r.text "
-                  f"WITH c MATCH (d:{_DOC} {{id:$doc}}) MERGE (c)-[:PART_OF]->(d)",
+                  f"WITH c MATCH (d:{_DOC} {{id:$doc, tenant:$t}}) MERGE (c)-[:PART_OF]->(d)",
                   rows=chunk_rows, t=tenant, n=namespace, doc=doc.id)
             if ent_rows:
                 s.run(f"UNWIND $rows AS r MERGE (e:{_ENT} {{id:r.id}}) "
@@ -134,10 +165,14 @@ class Neo4jBackend:
                       rows=ent_rows, t=tenant, n=namespace)
             if ment_rows:
                 s.run(f"UNWIND $rows AS r MATCH (e:{_ENT} {{id:r.eid}}) "
-                      f"MATCH (c:{_CHUNK} {{id:r.cid}}) MERGE (e)-[:MENTIONED_IN]->(c)", rows=ment_rows)
+                      f"MATCH (c:{_CHUNK} {{id:r.cid, tenant:$t}}) MERGE (e)-[:MENTIONED_IN]->(c)",
+                      rows=ment_rows, t=tenant)
             if rel_rows:
                 s.run(f"UNWIND $rows AS r MATCH (a:{_ENT} {{id:r.sid}}) MATCH (b:{_ENT} {{id:r.oid}}) "
                       "MERGE (a)-[rel:REL {type:r.type}]->(b) SET rel.doc_id=r.doc_id", rows=rel_rows)
+            if stale:  # a shrink can strand entities whose only mentions were stale chunks
+                self._prune_orphans(s, tenant)
+        return stale
 
     # -- search ------------------------------------------------------------
     def search(self, qvec, *, tenant, namespace, k):
@@ -145,16 +180,19 @@ class Neo4jBackend:
             idx, meta = self._load_index(tenant)
             if not meta:
                 return []
-            scores, ids = idx.search(np.asarray(qvec, dtype=np.float32), min(k * 3, max(k, 30)))
+            # over-fetch 3x (min 30) so namespace filtering + dedup below can
+            # still fill k results
+            scores, ids = idx.search(np.asarray(qvec, dtype=np.float32), max(k * 3, 30))
         out, seen = [], set()
         for sc, uid in zip(scores[0].tolist(), ids[0].tolist()):
             row = meta.get(int(uid))
             if not row or (namespace and row.get("namespace") != namespace):
                 continue
-            tk = row.get("text", "")[:120]
-            if tk in seen:
+            # dedup by chunk id, not text prefix — templated corpora share long
+            # boilerplate heads and prefix-dedup starves k
+            if row.get("id") in seen:
                 continue
-            seen.add(tk)
+            seen.add(row.get("id"))
             out.append({**row, "score": round(float(sc), 4)})
             if len(out) >= k:
                 break
@@ -167,7 +205,7 @@ class Neo4jBackend:
         h = max(1, min(int(hops or 1), 3))  # var-length bounds can't be parameterized
         with self._driver.session() as s:
             ent = s.run(f"MATCH (e:{_ENT})-[:MENTIONED_IN]->(c:{_CHUNK}) "
-                        "WHERE c.id IN $cids AND e.tenant=$t "
+                        "WHERE c.id IN $cids AND c.tenant=$t AND e.tenant=$t "
                         "RETURN DISTINCT e.name AS name,e.etype AS etype,e.id AS id LIMIT 100",
                         cids=chunk_ids, t=tenant).data()
             eids = [e["id"] for e in ent]
@@ -194,23 +232,14 @@ class Neo4jBackend:
         with self._lock:
             with self._driver.session() as s:
                 cids = [r["id"] for r in s.run(
-                    f"MATCH (c:{_CHUNK})-[:PART_OF]->(d:{_DOC} {{id:$id}}) "
-                    "WHERE d.tenant=$t RETURN c.id AS id", id=doc_id, t=tenant)]
-                s.run(f"MATCH (d:{_DOC} {{id:$id}}) WHERE d.tenant=$t "
+                    f"MATCH (c:{_CHUNK})-[:PART_OF]->(d:{_DOC} {{id:$id, tenant:$t}}) "
+                    "RETURN c.id AS id", id=doc_id, t=tenant)]
+                s.run(f"MATCH (d:{_DOC} {{id:$id, tenant:$t}}) "
                       f"OPTIONAL MATCH (c:{_CHUNK})-[:PART_OF]->(d) DETACH DELETE c, d",
                       id=doc_id, t=tenant)
-                pruned = s.run(f"MATCH (e:{_ENT} {{tenant:$t}}) "
-                               "WHERE NOT (e)-[:MENTIONED_IN]->() "
-                               "WITH e DETACH DELETE e RETURN count(*) AS n",
-                               t=tenant).single()["n"]
+                pruned = self._prune_orphans(s, tenant)
             idx, meta = self._load_index(tenant)
-            for cid in cids:
-                ci = _cid_int(cid)
-                try:
-                    idx.remove(ci)
-                except Exception:
-                    pass
-                meta.pop(ci, None)
+            self._drop_vectors(idx, meta, cids)
             self._save_index(tenant)
         return {"doc_id": doc_id, "chunks_deleted": len(cids), "entities_pruned": pruned}
 

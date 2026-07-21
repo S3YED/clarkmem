@@ -129,6 +129,10 @@ export COGNIFY_HOST=127.0.0.1,100.x.y.z COGNIFY_API_KEY=$(openssl rand -hex 24)
 cognify-serve   # /health stays open; everything else needs x-api-key
 ```
 
+Server-side path ingestion (`{"path": ...}`) is off by default; set
+`COGNIFY_INGEST_ROOT=<dir>` to allow it for files under that directory only.
+Text bodies are capped by `COGNIFY_MAX_TEXT` (default 2M chars).
+
 Bulk ingest is network-bound on the extractor; parallelize it with
 `--workers 8` (or `COGNIFY_EXTRACT_WORKERS`) and use `--cache` for cheap re-runs.
 

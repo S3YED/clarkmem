@@ -34,6 +34,8 @@ _SYSTEM = (
     "If nothing meaningful, return empty arrays."
 )
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
+# hard caps so one misbehaving model reply can't flood the graph
+_MAX_ENTITIES, _MAX_RELATIONS, _MAX_NAME = 64, 128, 200
 
 
 @dataclass(frozen=True)
@@ -71,7 +73,9 @@ def _parse(content: str) -> Extraction:
     valid = set(ENTITY_TYPES)
     seen_e, ents = set(), []
     for e in data.get("entities", []) or []:
-        name = str(e.get("name", "")).strip()
+        if len(ents) >= _MAX_ENTITIES:
+            break
+        name = str(e.get("name", "")).strip()[:_MAX_NAME]
         if not name or name.lower() in seen_e:
             continue
         etype = str(e.get("type", "Concept")).strip()
@@ -81,9 +85,11 @@ def _parse(content: str) -> Extraction:
     names = {e.name.lower() for e in ents}
     seen_r, rels = set(), []
     for r in data.get("relations", []) or []:
-        subj = str(r.get("subject", "")).strip()
-        pred = str(r.get("predicate", "")).strip().upper().replace(" ", "_")
-        obj = str(r.get("object", "")).strip()
+        if len(rels) >= _MAX_RELATIONS:
+            break
+        subj = str(r.get("subject", "")).strip()[:_MAX_NAME]
+        pred = str(r.get("predicate", "")).strip().upper().replace(" ", "_")[:_MAX_NAME]
+        obj = str(r.get("object", "")).strip()[:_MAX_NAME]
         if not (subj and pred and obj):
             continue
         if subj.lower() not in names or obj.lower() not in names:

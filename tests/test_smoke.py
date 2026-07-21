@@ -14,6 +14,28 @@ def test_chunking():
     assert len({c.id for c in doc.chunks}) == len(doc.chunks)  # unique ids
 
 
+def test_inline_doc_ids_content_addressed():
+    import hashlib
+    from cognify.loader import _doc_id
+    base = "x" * 600
+    # two distinct notes sharing a >512-char preamble must NOT collide
+    assert _doc_id("inline", base + " alpha") != _doc_id("inline", base + " omega")
+    # ids for short inline text are unchanged from the pre-0.5 scheme (no
+    # migration churn for existing stores)
+    short = "a short inline note"
+    assert _doc_id("inline", short) == hashlib.sha256(f"inline::{short}".encode()).hexdigest()[:16]
+
+
+def test_extractor_caps_hostile_output():
+    import json as _json
+    from cognify.extractor import _MAX_ENTITIES, _MAX_NAME
+    flood = {"entities": [{"name": f"e{i}", "type": "Concept"} for i in range(500)],
+             "relations": []}
+    assert len(_parse(_json.dumps(flood)).entities) == _MAX_ENTITIES
+    long_name = {"entities": [{"name": "N" * 5000, "type": "Concept"}], "relations": []}
+    assert len(_parse(_json.dumps(long_name)).entities[0].name) == _MAX_NAME
+
+
 def test_extraction_parse():
     ex = _parse('{"entities":[{"name":"Clark","type":"Product"},{"name":"Neo4j","type":"Technology"}],'
                 '"relations":[{"subject":"Clark","predicate":"USES","object":"Neo4j"}]}')
@@ -235,6 +257,74 @@ def test_local_stats_namespace_filter(monkeypatch, tmp_path):
     s = be.stats(tenant="t", namespace="n1")
     assert s["documents"] == 1 and s["chunks"] == 1 and s["namespace"] == "n1"
     be.close()
+
+
+def test_key_identity_and_local_shrink_cleanup(monkeypatch, tmp_path):
+    be = _local_backend_or_skip(monkeypatch, tmp_path)
+    _stub_extract_two_docs(monkeypatch)
+    long_text = "# A\n" + "turtle " * 700 + "\n# B\n" + "cheese " * 700
+    r1 = cognify.ingest(be, long_text, is_path=False, tenant="t", key="note")
+    assert r1.chunks > 1 and be.stats(tenant="t")["entities"] == 4  # A,B + C,D
+    short = "quantum turtle memo, tiny now but still all about turtles today"
+    r2 = cognify.ingest(be, short, is_path=False, tenant="t", key="note")
+    assert r1.doc_id == r2.doc_id                       # key = stable identity
+    s = be.stats(tenant="t")
+    assert s["documents"] == 1 and s["chunks"] == 1     # stale graph chunks gone
+    assert s["entities"] == 2 and s["vectors"] == 1     # C,D pruned with them
+    be.close()
+
+
+def test_local_stats_all_tenants(monkeypatch, tmp_path):
+    be = _local_backend_or_skip(monkeypatch, tmp_path)
+    cognify.ingest(be, "alpha " * 30, is_path=False, tenant="t1", do_extract=False)
+    cognify.ingest(be, "beta " * 30, is_path=False, tenant="t2", do_extract=False)
+    s = be.stats(tenant=None)  # no tenant = global, same meaning as neo4j backend
+    assert s["documents"] == 2 and s["chunks"] == 2 and s["vectors"] == 2
+    be.close()
+
+
+def test_server_clamps_and_path_gate(monkeypatch, tmp_path):
+    try:
+        from fastapi.testclient import TestClient
+    except ImportError:
+        import pytest
+        pytest.skip("fastapi not installed")
+    import numpy as np
+    from cognify import server
+
+    class StubBackend:
+        seen_k = None
+
+        def embed_texts(self, texts):
+            return np.zeros((len(texts), 384), dtype=np.float32)
+
+        def search(self, qvec, *, tenant, namespace, k):
+            StubBackend.seen_k = k
+            return []
+
+        def expand(self, chunk_ids, *, tenant, hops):
+            return {"entities": [], "relations": []}
+
+        def load_document(self, doc, **kw):
+            pass
+
+    monkeypatch.setattr(server, "_backend", StubBackend())
+    monkeypatch.delenv("COGNIFY_API_KEY", raising=False)
+    c = TestClient(server.app)
+
+    assert c.post("/recall", json={"query": "x", "k": 99999}).status_code == 200
+    assert StubBackend.seen_k == 100                       # k clamped
+
+    doc = tmp_path / "doc.md"
+    doc.write_text("a perfectly harmless document with plenty of characters in it")
+    monkeypatch.delenv("COGNIFY_INGEST_ROOT", raising=False)
+    assert c.post("/ingest", json={"path": str(doc)}).status_code == 403   # gate closed
+    monkeypatch.setenv("COGNIFY_INGEST_ROOT", str(tmp_path))
+    assert c.post("/ingest", json={"path": str(doc), "extract": False}).status_code == 200
+    assert c.post("/ingest", json={"path": "/etc/hostname"}).status_code == 403  # outside root
+
+    monkeypatch.setenv("COGNIFY_MAX_TEXT", "100")
+    assert c.post("/ingest", json={"text": "y" * 200}).status_code == 413  # size cap
 
 
 def test_local_e2e():
