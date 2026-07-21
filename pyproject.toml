@@ -3,12 +3,12 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cognify-kg"
-version = "0.5.0"
-description = "Lightweight document-ingestion + typed knowledge-graph engine for agents"
+name = "clarkmem"
+version = "1.0.0"
+description = "ClarkMem — persistent typed knowledge-graph memory for AI agents: temporal facts, hybrid entity-anchored recall, multi-tenant. By Clark (Weblyfe)."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = { text = "Proprietary" }
 dependencies = [
     "numpy>=1.24",
     "requests>=2.31",
@@ -28,9 +28,13 @@ all = ["chromadb>=0.5", "networkx>=3.0", "neo4j>=5.0", "turbovec>=0.1", "pypdf>=
        "sentence-transformers>=2.2", "fastembed>=0.4"]
 
 [project.scripts]
-cognify = "cognify.cli:main"
-cognify-mcp = "cognify.mcp_server:main"
-cognify-serve = "cognify.server:main"
+clarkmem = "clarkmem.cli:main"
+clarkmem-mcp = "clarkmem.mcp_server:main"
+clarkmem-serve = "clarkmem.server:main"
+# legacy aliases (pre-rename); deprecated, kept so existing fleet units keep running
+cognify = "clarkmem.cli:main"
+cognify-mcp = "clarkmem.mcp_server:main"
+cognify-serve = "clarkmem.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

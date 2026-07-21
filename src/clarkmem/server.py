@@ -1,10 +1,10 @@
 """
-Cognify HTTP server — a tiny FastAPI app exposing the engine over HTTP, so any
+ClarkMem HTTP server — a tiny FastAPI app exposing the engine over HTTP, so any
 agent runtime (Hermes, n8n, a shell, another service) can ingest and recall
 without a Python import.
 
-Run:  cognify-serve              (defaults to 127.0.0.1:8799)
-Env:  COGNIFY_HOST (comma-separated for multi-bind), COGNIFY_PORT, COGNIFY_BACKEND,
+Run:  clarkmem-serve              (defaults to 127.0.0.1:8799)
+Env:  CLARKMEM_HOST (comma-separated for multi-bind), CLARKMEM_PORT, CLARKMEM_BACKEND,
       plus the usual LLM/Neo4j vars.
 
 Endpoints:
@@ -16,12 +16,12 @@ Endpoints:
   DELETE /doc?doc_id=&tenant=
   GET    /stats?tenant=&namespace=
 
-Auth: set COGNIFY_API_KEY to require an x-api-key header on every endpoint
+Auth: set CLARKMEM_API_KEY to require an x-api-key header on every endpoint
 except /health. Unset = open (loopback-only single-user setups).
 
 Hardening: server-side path ingestion ({"path": ...}) is DISABLED unless
-COGNIFY_INGEST_ROOT points at a directory; only files under that root can be
-read. Text bodies are capped at COGNIFY_MAX_TEXT chars (default 2,000,000);
+CLARKMEM_INGEST_ROOT points at a directory; only files under that root can be
+read. Text bodies are capped at CLARKMEM_MAX_TEXT chars (default 2,000,000);
 recall k is clamped to 100 and hops to 3.
 """
 from __future__ import annotations
@@ -29,15 +29,15 @@ from __future__ import annotations
 import os
 import threading
 
-import cognify
-from cognify import config
+import clarkmem
+from clarkmem import config
 
 try:
     from fastapi import FastAPI, Header, HTTPException, Query
 except ImportError as e:  # pragma: no cover
-    raise SystemExit("FastAPI not installed. Run: pip install 'cognify-kg[serve]'") from e
+    raise SystemExit("FastAPI not installed. Run: pip install 'clarkmem-kg[serve]'") from e
 
-app = FastAPI(title="Cognify", version=cognify.__version__)
+app = FastAPI(title="ClarkMem", version=clarkmem.__version__)
 _backend = None
 _backend_lock = threading.Lock()
 
@@ -46,22 +46,22 @@ def _be():
     global _backend
     with _backend_lock:  # two first-requests must not build two backends
         if _backend is None:
-            _backend = cognify.get_backend(os.environ.get("COGNIFY_BACKEND", "local"))
+            _backend = clarkmem.get_backend(config.backend_default())
         return _backend
 
 
 def _auth(key: str | None):
-    """Constant-time key check when COGNIFY_API_KEY is set; no-op when unset."""
+    """Constant-time key check when CLARKMEM_API_KEY is set; no-op when unset."""
     import hmac
-    want = os.environ.get("COGNIFY_API_KEY")
+    want = config.api_key()
     if want and not (key and hmac.compare_digest(key, want)):
         raise HTTPException(401, "invalid or missing x-api-key")
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "backend": os.environ.get("COGNIFY_BACKEND", "local"),
-            "version": cognify.__version__}
+    return {"status": "ok", "backend": config.backend_default(),
+            "version": clarkmem.__version__}
 
 
 @app.post("/ingest")
@@ -74,19 +74,19 @@ def ingest(body: dict, x_api_key: str | None = Header(None)):
         root = config.ingest_root()
         if not root:
             raise HTTPException(403, "server-side path ingestion is disabled; set "
-                                     "COGNIFY_INGEST_ROOT to a directory to allow it")
+                                     "CLARKMEM_INGEST_ROOT to a directory to allow it")
         real, rootr = os.path.realpath(str(path)), os.path.realpath(root)
         if real != rootr and not real.startswith(rootr + os.sep):
-            raise HTTPException(403, "path is outside COGNIFY_INGEST_ROOT")
+            raise HTTPException(403, "path is outside CLARKMEM_INGEST_ROOT")
         src = real
     else:
         max_chars = config.max_text()
         if len(str(text)) > max_chars:
-            raise HTTPException(413, f"text exceeds COGNIFY_MAX_TEXT ({max_chars} chars)")
+            raise HTTPException(413, f"text exceeds CLARKMEM_MAX_TEXT ({max_chars} chars)")
         src = str(text)
     try:
         workers = min(int(body["workers"]), 32) if body.get("workers") else None
-        r = cognify.ingest(_be(), src, tenant=body.get("tenant", "default"),
+        r = clarkmem.ingest(_be(), src, tenant=body.get("tenant", "default"),
                            namespace=body.get("namespace", "default"),
                            agent=body.get("agent", "agent"),
                            is_path=bool(path), title=body.get("title"),
@@ -108,7 +108,7 @@ def recall(body: dict, x_api_key: str | None = Header(None)):
     except (TypeError, ValueError):
         raise HTTPException(400, "k and hops must be integers")
     try:
-        res = cognify.recall(_be(), q, tenant=body.get("tenant", "default"),
+        res = clarkmem.recall(_be(), q, tenant=body.get("tenant", "default"),
                              namespace=body.get("namespace"), k=k, hops=hops,
                              mode=body.get("mode", "hybrid"),
                              include_invalidated=bool(body.get("include_invalidated")))
@@ -125,7 +125,7 @@ def invalidate(body: dict, x_api_key: str | None = Header(None)):
     if not subject:
         raise HTTPException(400, "provide 'subject' (and optionally predicate/object)")
     try:
-        n = cognify.invalidate(_be(), str(subject), tenant=body.get("tenant", "default"),
+        n = clarkmem.invalidate(_be(), str(subject), tenant=body.get("tenant", "default"),
                                predicate=body.get("predicate"), object=body.get("object"))
         return {"invalidated": n}
     except Exception as e:
@@ -167,10 +167,10 @@ def main():
     import threading
 
     import uvicorn
-    port = int(os.environ.get("COGNIFY_PORT", "8799"))
-    # COGNIFY_HOST may be comma-separated (e.g. "127.0.0.1,100.x.y.z") to bind
+    port = config.serve_port()
+    # CLARKMEM_HOST may be comma-separated (e.g. "127.0.0.1,100.x.y.z") to bind
     # loopback + a VPN/tailnet IP without ever exposing 0.0.0.0.
-    hosts = [h.strip() for h in os.environ.get("COGNIFY_HOST", "127.0.0.1").split(",") if h.strip()]
+    hosts = config.serve_hosts()
     for h in hosts[1:]:
         threading.Thread(target=lambda hh=h: uvicorn.run(app, host=hh, port=port,
                                                          log_level="warning"), daemon=True).start()

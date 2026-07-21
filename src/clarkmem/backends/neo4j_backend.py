@@ -1,7 +1,7 @@
 """
 Fleet/server backend: TurboVec (vectors) + Neo4j (typed graph).
 
-Graph model (C-prefixed labels so Cognify never collides with other graphs in the
+Graph model (C-prefixed labels so ClarkMem never collides with other graphs in the
 same Neo4j; every node carries tenant + namespace):
 
   (:CDocument)-[:PART_OF]<-(:CChunk)  (:CEntity)-[:MENTIONED_IN]->(:CChunk)

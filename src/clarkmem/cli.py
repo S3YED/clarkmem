@@ -1,4 +1,4 @@
-"""Cognify CLI: ingest documents and run hybrid recall from the terminal."""
+"""ClarkMem CLI: ingest documents and run hybrid recall from the terminal."""
 from __future__ import annotations
 
 import argparse
@@ -8,8 +8,8 @@ import sys
 import time
 from pathlib import Path
 
-import cognify
-from cognify import config
+import clarkmem
+from clarkmem import config
 
 
 def _cache_path(tenant: str, namespace: str) -> Path:
@@ -21,16 +21,16 @@ def _cache_path(tenant: str, namespace: str) -> Path:
 
 
 def cmd_ingest(a):
-    be = cognify.get_backend(a.backend)
+    be = clarkmem.get_backend(a.backend)
     text = sys.stdin.read() if a.path == "-" else a.path
-    r = cognify.ingest(be, text, tenant=a.tenant, namespace=a.namespace or "default",
+    r = clarkmem.ingest(be, text, tenant=a.tenant, namespace=a.namespace or "default",
                        agent=a.agent, is_path=(a.path != "-"), key=a.key or None,
                        do_extract=not a.no_extract, workers=a.workers or None)
     print(json.dumps(r.__dict__, indent=2)); be.close()
 
 
 def cmd_ingest_dir(a):
-    be = cognify.get_backend(a.backend)
+    be = clarkmem.get_backend(a.backend)
     files = sorted(p for p in Path(a.path).expanduser().glob(a.glob) if p.is_file())
     if a.limit:
         files = files[:a.limit]
@@ -51,7 +51,7 @@ def cmd_ingest_dir(a):
                 tot["skipped"] += 1
                 continue
         try:
-            r = cognify.ingest(be, str(p), tenant=a.tenant, namespace=a.namespace or "default",
+            r = clarkmem.ingest(be, str(p), tenant=a.tenant, namespace=a.namespace or "default",
                                agent=a.agent, is_path=True, do_extract=not a.no_extract,
                                workers=a.workers or None)
             tot["docs"] += 1; tot["chunks"] += r.chunks
@@ -71,8 +71,8 @@ def cmd_ingest_dir(a):
 
 
 def cmd_recall(a):
-    be = cognify.get_backend(a.backend)
-    res = cognify.recall(be, a.query, tenant=a.tenant, namespace=a.namespace, k=a.k, hops=a.hops,
+    be = clarkmem.get_backend(a.backend)
+    res = clarkmem.recall(be, a.query, tenant=a.tenant, namespace=a.namespace, k=a.k, hops=a.hops,
                          mode=a.mode, include_invalidated=a.include_invalidated)
     print(json.dumps({
         "query": res.query, "tenant": res.tenant,
@@ -88,29 +88,29 @@ def cmd_recall(a):
 
 
 def cmd_invalidate(a):
-    be = cognify.get_backend(a.backend)
-    n = cognify.invalidate(be, a.subject, tenant=a.tenant,
+    be = clarkmem.get_backend(a.backend)
+    n = clarkmem.invalidate(be, a.subject, tenant=a.tenant,
                            predicate=a.predicate or None, object=a.object or None)
     print(json.dumps({"invalidated": n})); be.close()
 
 
 def cmd_maintain(a):
-    be = cognify.get_backend(a.backend)
+    be = clarkmem.get_backend(a.backend)
     print(json.dumps(be.maintain(tenant=a.tenant), indent=2)); be.close()
 
 
 def cmd_stats(a):
-    be = cognify.get_backend(a.backend)
+    be = clarkmem.get_backend(a.backend)
     print(json.dumps(be.stats(tenant=a.tenant, namespace=a.namespace), indent=2)); be.close()
 
 
 def cmd_forget(a):
-    be = cognify.get_backend(a.backend)
+    be = clarkmem.get_backend(a.backend)
     print(json.dumps(be.delete_document(a.doc_id, tenant=a.tenant), indent=2)); be.close()
 
 
 def main():
-    p = argparse.ArgumentParser(prog="cognify")
+    p = argparse.ArgumentParser(prog="clarkmem")
     p.add_argument("--backend", default=None, choices=["neo4j", "local"])
     p.add_argument("--tenant", default="default")
     # None so recall/stats span ALL namespaces unless one is asked for

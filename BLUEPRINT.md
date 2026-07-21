@@ -1,7 +1,7 @@
-# Blueprint — rebuild Cognify from scratch
+# Blueprint — rebuild ClarkMem from scratch
 
 This is a complete specification. An agent given only this file can reconstruct
-Cognify. Build in the order below; each step is independently testable.
+ClarkMem. Build in the order below; each step is independently testable.
 
 ## Goal
 
@@ -11,7 +11,7 @@ Lightweight, no hardcoded machine specifics, multi-tenant.
 
 ## Stack
 
-- Python ≥ 3.10. Package under `src/cognify/` (src layout, `pyproject.toml`).
+- Python ≥ 3.10. Package under `src/clarkmem/` (src layout, `pyproject.toml`).
 - Embeddings: `all-MiniLM-L6-v2`, 384d, L2-normalized.
   - local backend: ChromaDB's bundled ONNX MiniLM (no torch).
   - server backend: `sentence-transformers`.
@@ -23,7 +23,7 @@ Lightweight, no hardcoded machine specifics, multi-tenant.
 ## Step 1 — `config.py` (portability layer)
 
 Read everything from env with defaults. Expose: `DATA_DIR`
-(`COGNIFY_DATA_DIR`, default `~/.cognify`), `EMBED_MODEL`, `EMBED_DIM=384`,
+(`COGNIFY_DATA_DIR`, default `~/.clarkmem`), `EMBED_MODEL`, `EMBED_DIM=384`,
 `LLM_BASE/LLM_MODEL/LLM_KEY_ENV`, `llm_key()`, `neo4j_creds()`. On macOS, if
 `/opt/homebrew/opt/expat/lib` exists and `DYLD_LIBRARY_PATH` is unset, set it (so
 pypdf/chromadb import). No secrets, no hardcoded paths anywhere else in the tree.
@@ -38,7 +38,7 @@ to `". "` when past the halfway point. Drop pieces < 40 chars.
   both frozen dataclasses.
 - `doc_id = sha256(source + "::" + text[:512])[:16]`; `chunk.id = f"{doc_id}_{ord}"`.
 
-## Step 3 — `extractor.py` (Cognify)
+## Step 3 — `extractor.py` (ClarkMem)
 
 `extract(text) -> Extraction(entities, relations)` (frozen dataclasses;
 `Entity(name,type)`, `Relation(subject,predicate,object)`).
@@ -87,7 +87,7 @@ Entity id = `f"{tenant}::{name.lower()}::{type}"`. Every node carries `tenant` +
 `namespace`. Re-ingest is idempotent (delete a doc's prior chunks first).
 
 - **local_backend.py**: ChromaDB `PersistentClient` at `DATA_DIR/local/chroma`, one
-  collection `cognify_<tenant>` (cosine). `embed_texts` = ChromaDB
+  collection `clarkmem_<tenant>` (cosine). `embed_texts` = ChromaDB
   `ONNXMiniLM_L6_V2`. Graph = networkx DiGraph per tenant at
   `DATA_DIR/local/graph-<tenant>.json` (node-link JSON). search via
   `collection.query` (where namespace); expand via predecessors of `chunk::<id>`
@@ -102,7 +102,7 @@ Entity id = `f"{tenant}::{name.lower()}::{type}"`. Every node carries `tenant` +
 
 ## Step 6 — `cli.py`
 
-`cognify {ingest,ingest-dir,recall,forget,stats}` with `--backend/--tenant/
+`clarkmem {ingest,ingest-dir,recall,forget,stats}` with `--backend/--tenant/
 --namespace/--agent`. Both ingest commands take `--workers`; `recall` takes
 `--hops`. `ingest-dir` takes `--glob`, `--limit`, `--no-extract`, and `--cache`
 (skip files whose sha256 is unchanged since last run; cache at
@@ -111,7 +111,7 @@ can be ingested into two namespaces). Console script entry in `pyproject.toml`.
 
 ## Step 7 — packaging & tests
 
-`pyproject.toml` (src layout, extras `local`/`neo4j`/`all`, `cognify` script),
+`pyproject.toml` (src layout, extras `local`/`neo4j`/`all`, `clarkmem` script),
 `.env.example`, `setup.sh` (venv + `pip install -e .[extra]` + copy .env),
 `tests/test_smoke.py` (chunking, extraction-parse incl. dropping ungrounded
 relations, and an LLM-key-gated local e2e).
@@ -120,8 +120,8 @@ relations, and an LLM-key-gated local e2e).
 
 ```bash
 ./setup.sh local && source .venv/bin/activate && set -a && . ./.env && set +a
-cognify ingest examples/sample_docs/clark.md --tenant demo
-cognify recall "what does Clark use for memory?" --tenant demo
+clarkmem ingest examples/sample_docs/clark.md --tenant demo
+clarkmem recall "what does Clark use for memory?" --tenant demo
 # expect: chunks returned, entities incl. Clark/Neo4j/TurboVec,
 #         relations incl. Clark -USES-> Neo4j
 pytest -q

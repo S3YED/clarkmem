@@ -1,5 +1,5 @@
 """
-Cognify core — the ECL orchestration (Extract -> Cognify -> Load), the shared
+ClarkMem core — the ECL orchestration (Extract -> ClarkMem -> Load), the shared
 embedder, and the Backend protocol both backends implement.
 """
 from __future__ import annotations
@@ -13,7 +13,7 @@ import numpy as np
 from . import config, extractor as _ex
 from .loader import Document, load
 
-log = logging.getLogger("cognify")
+log = logging.getLogger("clarkmem")
 _model = None
 
 
@@ -24,8 +24,8 @@ def get_model():
             try:
                 from fastembed import TextEmbedding
             except ImportError as e:
-                raise RuntimeError("COGNIFY_EMBED_PROVIDER=fastembed but fastembed is not "
-                                   "installed. Run: pip install 'cognify-kg[fastembed]'") from e
+                raise RuntimeError("CLARKMEM_EMBED_PROVIDER=fastembed but fastembed is not "
+                                   "installed. Run: pip install 'clarkmem-kg[fastembed]'") from e
             name = config.EMBED_MODEL if "/" in config.EMBED_MODEL \
                 else f"sentence-transformers/{config.EMBED_MODEL}"
             _model = TextEmbedding(model_name=name)
@@ -34,7 +34,7 @@ def get_model():
                 from sentence_transformers import SentenceTransformer
             except ImportError as e:
                 raise RuntimeError("sentence-transformers is not installed. Run: pip install "
-                                   "'cognify-kg[st]' or set COGNIFY_EMBED_PROVIDER=fastembed") from e
+                                   "'clarkmem-kg[st]' or set CLARKMEM_EMBED_PROVIDER=fastembed") from e
             _model = SentenceTransformer(config.EMBED_MODEL)
     return _model
 

@@ -66,6 +66,8 @@ class LocalBackend:
         return np.asarray(self._ef(texts), dtype=np.float32)
 
     def _collection(self, tenant):
+        # "cognify_" is the legacy on-disk collection prefix — kept so existing
+        # local stores keep working across the ClarkMem rename
         return self._client.get_or_create_collection(
             name=f"cognify_{_safe(tenant)}", metadata={"hnsw:space": "cosine"})
 
@@ -362,7 +364,7 @@ class LocalBackend:
                 out["relations"] += sum(1 for e in data.get("links", []) if e.get("rel") == "REL")
             for col in self._client.list_collections():  # objects pre-0.6, names after
                 name = getattr(col, "name", col)
-                if str(name).startswith("cognify_"):
+                if str(name).startswith("cognify_"):  # legacy on-disk prefix
                     c = col if hasattr(col, "count") else self._client.get_collection(str(name))
                     out["vectors"] += c.count()
         return out

@@ -1,21 +1,24 @@
-MIT License
+ClarkMem — Proprietary License
 
-Copyright (c) 2026 Weblyfe
+Copyright (c) 2026 Weblyfe (the company behind Clark). All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+ClarkMem is proprietary software of Weblyfe. The source code is made
+available for evaluation, security review, and reference only.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+Except as expressly permitted in writing by Weblyfe, you may not:
+  - use ClarkMem or any part of it in production,
+  - copy, modify, or create derivative works of the software,
+  - redistribute, sublicense, sell, or offer the software as a service.
+
+Running ClarkMem as part of a Clark / Weblyfe product or engagement is covered
+by your agreement with Weblyfe.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+IMPLIED. IN NO EVENT SHALL WEBLYFE BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY ARISING FROM THE USE OF THE SOFTWARE.
+
+Historical note: versions up to and including 0.5.0 were published under the
+MIT license (as "Cognify"); those released versions remain available under MIT.
+From 1.0.0 onward the project is proprietary.
+
+Licensing inquiries: seyed@weblyfe.nl

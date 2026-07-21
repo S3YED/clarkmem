@@ -2,9 +2,9 @@
 (it makes one cheap API call per chunk)."""
 import os
 
-import cognify
-from cognify.loader import load
-from cognify.extractor import Extraction, _parse
+import clarkmem
+from clarkmem.loader import load
+from clarkmem.extractor import Extraction, _parse
 
 
 def test_chunking():
@@ -16,7 +16,7 @@ def test_chunking():
 
 def test_inline_doc_ids_content_addressed():
     import hashlib
-    from cognify.loader import _doc_id
+    from clarkmem.loader import _doc_id
     base = "x" * 600
     # two distinct notes sharing a >512-char preamble must NOT collide
     assert _doc_id("inline", base + " alpha") != _doc_id("inline", base + " omega")
@@ -28,7 +28,7 @@ def test_inline_doc_ids_content_addressed():
 
 def test_extractor_caps_hostile_output():
     import json as _json
-    from cognify.extractor import _MAX_ENTITIES, _MAX_NAME
+    from clarkmem.extractor import _MAX_ENTITIES, _MAX_NAME
     flood = {"entities": [{"name": f"e{i}", "type": "Concept"} for i in range(500)],
              "relations": []}
     assert len(_parse(_json.dumps(flood)).entities) == _MAX_ENTITIES
@@ -52,8 +52,8 @@ def test_parse_drops_ungrounded_relations():
 
 def test_parallel_extraction_matches_serial(monkeypatch):
     import numpy as np
-    from cognify import core
-    from cognify.extractor import Entity
+    from clarkmem import core
+    from clarkmem.extractor import Entity
 
     def fake_extract(text, **kw):
         return Extraction(entities=(Entity(name=text[:8], type="Concept"),), relations=())
@@ -78,8 +78,8 @@ def test_parallel_extraction_matches_serial(monkeypatch):
 
 def test_parallel_extraction_degrades_per_chunk(monkeypatch):
     import numpy as np
-    from cognify import core
-    from cognify.extractor import Entity
+    from clarkmem import core
+    from clarkmem.extractor import Entity
 
     def flaky_extract(text, **kw):
         if "beta" in text:
@@ -107,7 +107,7 @@ def test_fastembed_provider_normalized(monkeypatch):
         import pytest
         pytest.skip("fastembed not installed")
     import numpy as np
-    from cognify import config, core
+    from clarkmem import config, core
     monkeypatch.setattr(config, "EMBED_PROVIDER", "fastembed")
     monkeypatch.setattr(core, "_model", None)
     v = core.embed(["hello world", "knowledge graphs connect facts"])
@@ -122,7 +122,7 @@ def test_server_auth(monkeypatch):
     except ImportError:
         import pytest
         pytest.skip("fastapi not installed")
-    from cognify import server
+    from clarkmem import server
 
     class StubBackend:
         def stats(self, *, tenant=None, namespace=None):
@@ -143,7 +143,7 @@ def test_server_auth(monkeypatch):
 
 def test_extractor_retries_on_429(monkeypatch):
     import time as _time
-    from cognify import extractor
+    from clarkmem import extractor
 
     calls = []
 
@@ -173,7 +173,7 @@ def test_extractor_retries_on_429(monkeypatch):
 
 
 def test_cache_path_is_namespaced(monkeypatch, tmp_path):
-    from cognify import cli, config
+    from clarkmem import cli, config
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     a = cli._cache_path("acme", "docs")
     b = cli._cache_path("acme", "mail")
@@ -183,25 +183,25 @@ def test_cache_path_is_namespaced(monkeypatch, tmp_path):
 def _local_backend_or_skip(monkeypatch, tmp_path):
     import pytest
     pytest.importorskip("chromadb")
-    from cognify import config
+    from clarkmem import config
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
-    return cognify.get_backend("local")
+    return clarkmem.get_backend("local")
 
 
 def test_local_e2e_vectors_only(monkeypatch, tmp_path):
     be = _local_backend_or_skip(monkeypatch, tmp_path)
-    r = cognify.ingest(be, "Clark uses Neo4j and TurboVec for memory.",
+    r = clarkmem.ingest(be, "Clark uses Neo4j and TurboVec for memory.",
                        is_path=False, tenant="t", namespace="n", do_extract=False)
     assert r.chunks == 1 and not r.extracted
-    res = cognify.recall(be, "what does Clark use?", tenant="t")
+    res = clarkmem.recall(be, "what does Clark use?", tenant="t")
     assert res.chunks and res.chunks[0]["text"].startswith("Clark uses")
     be.close()
 
 
 def _stub_extract_two_docs(monkeypatch):
     """doc about turtles -> entities A,B + A->B; doc about cheese -> B,C,D + B->C, C->D."""
-    from cognify import core
-    from cognify.extractor import Entity, Relation
+    from clarkmem import core
+    from clarkmem.extractor import Entity, Relation
 
     def fake_extract(text, **kw):
         if "turtle" in text:
@@ -217,15 +217,15 @@ def _stub_extract_two_docs(monkeypatch):
 def test_local_multihop_expand(monkeypatch, tmp_path):
     be = _local_backend_or_skip(monkeypatch, tmp_path)
     _stub_extract_two_docs(monkeypatch)
-    cognify.ingest(be, "quantum turtles stack in shells all the way down today",
+    clarkmem.ingest(be, "quantum turtles stack in shells all the way down today",
                    is_path=False, tenant="t")
-    cognify.ingest(be, "medieval cheese wheels ferment in stone cellars for years",
+    clarkmem.ingest(be, "medieval cheese wheels ferment in stone cellars for years",
                    is_path=False, tenant="t")
-    one = cognify.recall(be, "quantum turtles", tenant="t", k=1, hops=1)
+    one = clarkmem.recall(be, "quantum turtles", tenant="t", k=1, hops=1)
     names1 = {e["name"] for e in one.entities}
     rels1 = {(r["subject"], r["object"]) for r in one.relations}
     assert names1 == {"A", "B"} and ("B", "C") in rels1 and ("C", "D") not in rels1
-    two = cognify.recall(be, "quantum turtles", tenant="t", k=1, hops=2)
+    two = clarkmem.recall(be, "quantum turtles", tenant="t", k=1, hops=2)
     names2 = {e["name"] for e in two.entities}
     rels2 = {(r["subject"], r["object"]) for r in two.relations}
     assert "C" in names2 and ("C", "D") in rels2
@@ -235,24 +235,24 @@ def test_local_multihop_expand(monkeypatch, tmp_path):
 def test_local_delete_prunes_orphans(monkeypatch, tmp_path):
     be = _local_backend_or_skip(monkeypatch, tmp_path)
     _stub_extract_two_docs(monkeypatch)
-    cognify.ingest(be, "quantum turtles stack in shells all the way down today",
+    clarkmem.ingest(be, "quantum turtles stack in shells all the way down today",
                    is_path=False, tenant="t")
-    r2 = cognify.ingest(be, "medieval cheese wheels ferment in stone cellars for years",
+    r2 = clarkmem.ingest(be, "medieval cheese wheels ferment in stone cellars for years",
                         is_path=False, tenant="t")
     assert be.stats(tenant="t")["entities"] == 4  # A, B, C, D
     out = be.delete_document(r2.doc_id, tenant="t")
     assert out["chunks_deleted"] == 1 and out["entities_pruned"] == 2  # C, D gone
     s = be.stats(tenant="t")
     assert s["documents"] == 1 and s["entities"] == 2  # A, B survive (B still cited by doc1)
-    assert not cognify.recall(be, "medieval cheese", tenant="t").chunks or \
-        "cheese" not in cognify.recall(be, "medieval cheese", tenant="t").chunks[0]["text"]
+    assert not clarkmem.recall(be, "medieval cheese", tenant="t").chunks or \
+        "cheese" not in clarkmem.recall(be, "medieval cheese", tenant="t").chunks[0]["text"]
     be.close()
 
 
 def test_local_stats_namespace_filter(monkeypatch, tmp_path):
     be = _local_backend_or_skip(monkeypatch, tmp_path)
-    cognify.ingest(be, "alpha " * 30, is_path=False, tenant="t", namespace="n1", do_extract=False)
-    cognify.ingest(be, "beta " * 30, is_path=False, tenant="t", namespace="n2", do_extract=False)
+    clarkmem.ingest(be, "alpha " * 30, is_path=False, tenant="t", namespace="n1", do_extract=False)
+    clarkmem.ingest(be, "beta " * 30, is_path=False, tenant="t", namespace="n2", do_extract=False)
     assert be.stats(tenant="t")["documents"] == 2
     s = be.stats(tenant="t", namespace="n1")
     assert s["documents"] == 1 and s["chunks"] == 1 and s["namespace"] == "n1"
@@ -263,10 +263,10 @@ def test_key_identity_and_local_shrink_cleanup(monkeypatch, tmp_path):
     be = _local_backend_or_skip(monkeypatch, tmp_path)
     _stub_extract_two_docs(monkeypatch)
     long_text = "# A\n" + "turtle " * 700 + "\n# B\n" + "cheese " * 700
-    r1 = cognify.ingest(be, long_text, is_path=False, tenant="t", key="note")
+    r1 = clarkmem.ingest(be, long_text, is_path=False, tenant="t", key="note")
     assert r1.chunks > 1 and be.stats(tenant="t")["entities"] == 4  # A,B + C,D
     short = "quantum turtle memo, tiny now but still all about turtles today"
-    r2 = cognify.ingest(be, short, is_path=False, tenant="t", key="note")
+    r2 = clarkmem.ingest(be, short, is_path=False, tenant="t", key="note")
     assert r1.doc_id == r2.doc_id                       # key = stable identity
     s = be.stats(tenant="t")
     assert s["documents"] == 1 and s["chunks"] == 1     # stale graph chunks gone
@@ -276,8 +276,8 @@ def test_key_identity_and_local_shrink_cleanup(monkeypatch, tmp_path):
 
 def test_local_stats_all_tenants(monkeypatch, tmp_path):
     be = _local_backend_or_skip(monkeypatch, tmp_path)
-    cognify.ingest(be, "alpha " * 30, is_path=False, tenant="t1", do_extract=False)
-    cognify.ingest(be, "beta " * 30, is_path=False, tenant="t2", do_extract=False)
+    clarkmem.ingest(be, "alpha " * 30, is_path=False, tenant="t1", do_extract=False)
+    clarkmem.ingest(be, "beta " * 30, is_path=False, tenant="t2", do_extract=False)
     s = be.stats(tenant=None)  # no tenant = global, same meaning as neo4j backend
     assert s["documents"] == 2 and s["chunks"] == 2 and s["vectors"] == 2
     be.close()
@@ -290,7 +290,7 @@ def test_server_clamps_and_path_gate(monkeypatch, tmp_path):
         import pytest
         pytest.skip("fastapi not installed")
     import numpy as np
-    from cognify import server
+    from clarkmem import server
 
     class StubBackend:
         seen_k = None
@@ -345,27 +345,27 @@ def test_temporal_evidence_invalidate_revive(monkeypatch, tmp_path):
     be = _local_backend_or_skip(monkeypatch, tmp_path)
     _stub_extract_two_docs(monkeypatch)
     turtle = "quantum turtles stack in shells all the way down today"
-    cognify.ingest(be, turtle, is_path=False, tenant="t", key="n1")
-    cognify.ingest(be, turtle + " again", is_path=False, tenant="t", key="n2")
+    clarkmem.ingest(be, turtle, is_path=False, tenant="t", key="n1")
+    clarkmem.ingest(be, turtle + " again", is_path=False, tenant="t", key="n2")
     rels = {(r["subject"], r["object"]): r for r in
-            cognify.recall(be, "quantum turtles", tenant="t", k=1).relations}
+            clarkmem.recall(be, "quantum turtles", tenant="t", k=1).relations}
     assert rels[("A", "B")]["evidence"] == 2          # two docs assert the fact
 
-    assert cognify.invalidate(be, "A", tenant="t") == 1
-    live = cognify.recall(be, "quantum turtles", tenant="t", k=1)
+    assert clarkmem.invalidate(be, "A", tenant="t") == 1
+    live = clarkmem.recall(be, "quantum turtles", tenant="t", k=1)
     assert not live.relations                          # closed facts stay hidden
-    hist = cognify.recall(be, "quantum turtles", tenant="t", k=1, include_invalidated=True)
+    hist = clarkmem.recall(be, "quantum turtles", tenant="t", k=1, include_invalidated=True)
     assert any(r.get("invalid_at") for r in hist.relations)  # ...but not erased
 
-    cognify.ingest(be, turtle + " once more", is_path=False, tenant="t", key="n3")
-    revived = cognify.recall(be, "quantum turtles", tenant="t", k=1)
+    clarkmem.ingest(be, turtle + " once more", is_path=False, tenant="t", key="n3")
+    revived = clarkmem.recall(be, "quantum turtles", tenant="t", k=1)
     assert any(r["subject"] == "A" for r in revived.relations)  # new evidence revives
     be.close()
 
 
 def test_functional_predicate_supersedes(monkeypatch, tmp_path):
-    from cognify import core
-    from cognify.extractor import Entity, Relation
+    from clarkmem import core
+    from clarkmem.extractor import Entity, Relation
     be = _local_backend_or_skip(monkeypatch, tmp_path)
     monkeypatch.setenv("COGNIFY_FUNCTIONAL_PREDICATES", "WORKS_AT")
 
@@ -375,22 +375,22 @@ def test_functional_predicate_supersedes(monkeypatch, tmp_path):
                           relations=(Relation("Sam", "WORKS_AT", org),))
 
     monkeypatch.setattr(core._ex, "extract", fake_extract)
-    cognify.ingest(be, "sam joined acme years ago and stayed a long time",
+    clarkmem.ingest(be, "sam joined acme years ago and stayed a long time",
                    is_path=False, tenant="t")
-    cognify.ingest(be, "sam moved over to globex just this spring season",
+    clarkmem.ingest(be, "sam moved over to globex just this spring season",
                    is_path=False, tenant="t")
-    rels = cognify.recall(be, "where does sam work", tenant="t", k=8).relations
+    rels = clarkmem.recall(be, "where does sam work", tenant="t", k=8).relations
     objs = {r["object"] for r in rels if r["subject"] == "Sam"}
     assert objs == {"Globex"}                          # old employer closed, not shown
-    hist = cognify.recall(be, "where does sam work", tenant="t", k=8,
+    hist = clarkmem.recall(be, "where does sam work", tenant="t", k=8,
                           include_invalidated=True).relations
     assert {"Acme", "Globex"} <= {r["object"] for r in hist if r["subject"] == "Sam"}
     be.close()
 
 
 def test_anchor_chunks_and_hybrid_fusion(monkeypatch, tmp_path):
-    from cognify import core
-    from cognify.extractor import Entity
+    from clarkmem import core
+    from clarkmem.extractor import Entity
     be = _local_backend_or_skip(monkeypatch, tmp_path)
 
     def fake_extract(text, **kw):
@@ -398,7 +398,7 @@ def test_anchor_chunks_and_hybrid_fusion(monkeypatch, tmp_path):
                           relations=())
 
     monkeypatch.setattr(core._ex, "extract", fake_extract)
-    cognify.ingest(be, "the dome atop the hill hosts nightly stargazing sessions",
+    clarkmem.ingest(be, "the dome atop the hill hosts nightly stargazing sessions",
                    is_path=False, tenant="t")
     hits = be.anchor_chunks("history of the Zebrastripe Observatory building",
                             tenant="t", namespace=None, limit=5)
@@ -414,9 +414,9 @@ def test_anchor_chunks_and_hybrid_fusion(monkeypatch, tmp_path):
 def test_local_maintain_heals(monkeypatch, tmp_path):
     be = _local_backend_or_skip(monkeypatch, tmp_path)
     _stub_extract_two_docs(monkeypatch)
-    r1 = cognify.ingest(be, "quantum turtles stack in shells all the way down today",
+    r1 = clarkmem.ingest(be, "quantum turtles stack in shells all the way down today",
                         is_path=False, tenant="t")
-    cognify.ingest(be, "medieval cheese wheels ferment in stone cellars for years",
+    clarkmem.ingest(be, "medieval cheese wheels ferment in stone cellars for years",
                    is_path=False, tenant="t")
     g = be._load_graph("t")
     g.remove_node(f"doc::{r1.doc_id}")                 # simulate historical drift
@@ -434,12 +434,12 @@ def test_local_e2e():
         pytest.skip("no LLM key set")
     import tempfile
 
-    from cognify import config
+    from clarkmem import config
     config.DATA_DIR = __import__("pathlib").Path(tempfile.mkdtemp())
-    be = cognify.get_backend("local")
-    r = cognify.ingest(be, "Clark uses Neo4j and TurboVec for memory.",
+    be = clarkmem.get_backend("local")
+    r = clarkmem.ingest(be, "Clark uses Neo4j and TurboVec for memory.",
                        is_path=False, tenant="t", namespace="n")
     assert r.chunks == 1
-    res = cognify.recall(be, "what does Clark use?", tenant="t")
+    res = clarkmem.recall(be, "what does Clark use?", tenant="t")
     assert res.chunks
     be.close()

@@ -1,11 +1,11 @@
 """
-LLM entity + relation extractor — the Cognify step.
+LLM entity + relation extractor — the ClarkMem step.
 
 Asks a cheap LLM to pull TYPED entities (Person, Project, Technology, ...) and
 TYPED relations (WORKS_AT, USES, ...) out of a chunk of text, so the graph
 carries real meaning rather than just "these two look similar".
 
-OpenAI-compatible: point COGNIFY_LLM_BASE at OpenRouter, OpenAI, a local vLLM,
+OpenAI-compatible: point CLARKMEM_LLM_BASE at OpenRouter, OpenAI, a local vLLM,
 Ollama, anything that speaks /chat/completions.
 """
 from __future__ import annotations
@@ -160,7 +160,7 @@ def extract(text: str, *, timeout: int = 60) -> Extraction:
         return Extraction()
     key = config.llm_key()
     if not key:
-        raise RuntimeError("No LLM key (set COGNIFY_LLM_KEY, ANTHROPIC_API_KEY, or OPENROUTER_API_KEY)")
+        raise RuntimeError("No LLM key (set CLARKMEM_LLM_KEY, ANTHROPIC_API_KEY, or OPENROUTER_API_KEY)")
     if config.LLM_PROVIDER == "anthropic":
         content = _call_anthropic(text, key, timeout)
     else:

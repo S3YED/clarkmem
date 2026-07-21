@@ -1,185 +1,178 @@
-# Cognify
+# ClarkMem
 
-[![ci](https://github.com/S3YED/cognify/actions/workflows/ci.yml/badge.svg)](https://github.com/S3YED/cognify/actions/workflows/ci.yml)
+[![ci](https://github.com/S3YED/clarkmem/actions/workflows/ci.yml/badge.svg)](https://github.com/S3YED/clarkmem/actions/workflows/ci.yml)
 
-A lightweight document-ingestion and **typed knowledge-graph** engine you can
-hand to an agent. Drop in raw documents, get back a queryable graph of typed
-entities and relations plus hybrid (vector + graph) retrieval.
+**The persistent memory engine behind [Clark](https://getclark.app).**
+Give any AI agent durable, structured, *temporal* memory: drop in documents,
+notes, or conversation facts — get back a typed knowledge graph with hybrid
+recall that knows not just **what** is true, but **how strongly evidenced** it
+is and **whether it still holds**.
 
-Two interchangeable backends behind one API:
+Proprietary software by Weblyfe · formerly published as "Cognify" (≤0.5.0, MIT).
 
-| backend | vectors | graph | needs | use |
-|---|---|---|---|---|
-| `local` (default) | ChromaDB (ONNX MiniLM) | networkx | nothing external, no torch | drop into an agent box |
-| `neo4j` | TurboVec | Neo4j | a Neo4j instance | shared/server graph |
+## Why agents need this
 
-Same 384d embedding space on both, so retrieval behaves identically.
+Vector RAG finds similar text. Agents need more: *who works where now*, *what
+replaced what*, *how facts connect across documents ingested weeks apart*.
+ClarkMem keeps three layers in one engine:
 
-## Why not plain RAG
+1. **Chunks + embeddings** — fuzzy recall over everything ingested.
+2. **A typed knowledge graph** — entities (`Person`, `Project`, `Technology`, …)
+   and typed relations (`WORKS_AT`, `USES`, `DEPENDS_ON`, …) extracted by a
+   cheap LLM at write time, merged across documents.
+3. **Time** — every fact carries `observed_at`, an **evidence count** that grows
+   as more sources assert it, and an `invalid_at` when the world moves on.
+   Closed facts stay queryable as history; recall hides them by default.
 
-Plain RAG embeds chunks and does similarity search. Cognify also asks a cheap LLM
-to extract **typed entities** (Person, Project, Technology, ...) and **typed
-relations** (`USES`, `WORKS_AT`, `BUILT`, ...) from every chunk, builds a graph,
-and expands that graph around your search hits. You get the facts *and* how they
-connect, which is what makes multi-hop questions work.
+## What's inside
 
-## How it compares
+| Capability | How |
+|---|---|
+| Temporal facts | evidence counting, explicit `invalidate`, optional one-current-object predicates (`CLARKMEM_FUNCTIONAL_PREDICATES`), history preserved |
+| Hybrid recall | vector search + **entity-anchored retrieval** (chunks mentioning entities named in the query), fused by reciprocal-rank fusion — no LLM call at recall time |
+| Multi-hop graph expansion | `hops=1..3` over typed relations, invalidated edges break the chain |
+| Multi-tenant + namespaces | every node keyed by tenant; namespaces partition a tenant (docs / memory / transcripts / …) |
+| Stable note identity | `key=` gives an evolving note update-in-place semantics; inline text is otherwise content-addressed |
+| Self-maintenance | `maintain` — integrity pass: dangling chunks, orphan entities, vector/graph reconciliation |
+| Two backends, one API | `local` = ChromaDB + networkx, zero external services, torch-free · `neo4j` = TurboVec + Neo4j for a shared fleet graph |
+| Claude-native | MCP server (`clarkmem-mcp`) → tools in Claude Code / Claude Desktop |
+| Runtime-agnostic | HTTP API (`clarkmem-serve`) for Hermes, n8n, cron, curl — plus a CLI |
+| Agent skills included | `skills/` — drop-in SKILL.md files that teach agents to *use* and to *improve* ClarkMem |
 
-| | Cognify | Cognee | Mem0 | Graphiti / Zep | LightRAG | plain RAG |
-|---|---|---|---|---|---|---|
-| Typed entity+relation graph | ✅ | ✅ | partial (dropped graph) | ✅ (temporal) | ✅ | ❌ |
-| Runs with **zero external services** | ✅ (ChromaDB+networkx) | ❌ (Kuzu file-lock; Neo4j for multi-agent) | ❌ (hosted/Qdrant) | ❌ (Neo4j) | ⚠️ | ✅ |
-| Torch-free local install | ✅ (ONNX embedder) | ❌ | ❌ | ❌ | ❌ | varies |
-| Same API, swap local ↔ server | ✅ | ⚠️ | ❌ | ❌ | ❌ | n/a |
-| Built-in multi-tenancy | ✅ (every node) | ⚠️ | ✅ | ✅ | ❌ | ❌ |
-| MCP server for Claude | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Lines of core code | ~1k, readable | large | large | large | medium | tiny |
-| Reconstruction spec for agents | ✅ `BLUEPRINT.md` | ❌ | ❌ | ❌ | ❌ | ❌ |
+Same 384d embedding space on both backends, so a graph built locally is
+queryable on the server and vice versa.
 
-**Where each wins, honestly.** Graphiti/Zep is the choice if you need temporal
-fact-tracking and SOC2/HIPAA compliance. Cognee has more managed connectors and a
-cloud tier. Mem0 is simplest for pure conversational memory. **Cognify wins when
-you want a real typed graph that an agent can run anywhere — a laptop, an
-isolated box, or a shared server — with one dependency-light install, one API
-across backends, and code small enough to read in a sitting.** It is the
-embed-it-in-your-agent option, not the managed-platform option.
-
-## Why it's so lightweight
-
-- **Default backend needs nothing external** — ChromaDB (embedded) + a networkx
-  graph in a JSON file. No database server, no Docker, no cloud.
-- **No PyTorch** — embeddings come from ChromaDB's bundled ONNX MiniLM. The whole
-  default install is small and CPU-only.
-- **The LLM is the only heavy lift, and it's remote** — entity/relation extraction
-  is one cheap API call per chunk; nothing large runs locally.
-- **~1k lines of pure-function code**, src layout, one file per concern. The
-  backend protocol is four methods; adding a store is one file.
-- **Scales by swapping a backend, not rewriting** — move to TurboVec + Neo4j for a
-  shared graph by changing one env var; the same embeddings and API carry over.
-
-## Pipeline (ECL)
-
-```
-ingest(doc) ->  Extract: file/text -> heading-aware ~512-token chunks
-                Cognify: per chunk, cheap LLM -> typed entities + relations
-                Load:    embed chunks (384d) -> vectors ; write graph
-recall(q)   ->  vector search (tenant-scoped) -> expand graph (hops=1..3)
-                -> chunks + subgraph
-forget(doc) ->  delete a document + its chunks/vectors, prune entities no
-                longer mentioned anywhere (CLI `cognify forget`, HTTP DELETE /doc)
-```
-
-## Quickstart
+## 60-second start
 
 ```bash
-./setup.sh local            # venv + deps + .env
+./setup.sh local            # venv + deps + .env  (zero external services)
 source .venv/bin/activate
-echo 'OPENROUTER_API_KEY=sk-or-...' >> .env
+echo 'OPENROUTER_API_KEY=sk-or-...' >> .env      # or ANTHROPIC_API_KEY
 set -a && . ./.env && set +a
 
-cognify ingest examples/sample_docs/acme.md --tenant demo
-cognify recall "what does Pathfinder run on and who owns it?" --tenant demo
-cognify stats --tenant demo
+clarkmem ingest examples/sample_docs/acme.md --tenant demo
+clarkmem recall "what does Pathfinder run on and who owns it?" --tenant demo
+clarkmem stats --tenant demo
 ```
 
 Python:
 
 ```python
-import cognify
-be = cognify.get_backend("local")
-cognify.ingest(be, "handbook.pdf", tenant="acme", namespace="hr")
-res = cognify.recall(be, "who owns onboarding?", tenant="acme")
-print(res.entities, res.relations)
+import clarkmem
+be = clarkmem.get_backend("local")
+clarkmem.ingest(be, "handbook.pdf", tenant="acme", namespace="hr")
+clarkmem.ingest(be, "Sam now leads support.", tenant="acme", key="sam-role")  # evolving note
+res = clarkmem.recall(be, "who leads support?", tenant="acme")
+print(res.chunks, res.relations)                  # facts carry evidence counts
+clarkmem.invalidate(be, "Sam", predicate="LEADS", tenant="acme")  # world changed
+```
+
+## Recall pipeline
+
+```
+remember ->  Extract   file/text -> heading-aware ~512-token chunks
+             Cognize   per chunk, cheap LLM -> typed entities + relations
+             Load      embed (384d) -> vectors ; graph merge (evidence++, temporal)
+recall   ->  vector top-k  +  entity-anchored chunks   ->  RRF fuse
+             -> expand typed graph around hits (1..3 hops, live facts only)
+             -> chunks + entities + relations, ready to ground an answer
+maintain ->  integrity pass: dangling chunks, orphan entities, vector drift
 ```
 
 ## Use with Claude
 
-**Claude as the extractor** — just set the key (auto-detected):
 ```bash
-pip install 'cognify-kg[local]'
-export ANTHROPIC_API_KEY=sk-ant-...
-cognify ingest notes.md --tenant demo && cognify recall "what connects to X?" --tenant demo
+pip install 'clarkmem[local,claude]'
+claude mcp add clarkmem -- clarkmem-mcp
 ```
 
-**Cognify as MCP tools** in Claude Code / Desktop:
-```bash
-pip install 'cognify-kg[local,claude]'
-claude mcp add cognify -- cognify-mcp
-```
-Claude then has `cognify_ingest`, `cognify_recall`, `cognify_stats`. Details in
-`integrations/claude/`.
+Claude gets `clarkmem_ingest`, `clarkmem_recall`, `clarkmem_invalidate`,
+`clarkmem_forget`, `clarkmem_stats`. Claude can also BE the extractor — set
+`ANTHROPIC_API_KEY` and it's auto-detected. Drop `skills/clarkmem/` into
+`~/.claude/skills/` to teach agents the memory workflow (recall-first,
+remember-with-key, invalidate-on-change).
 
-## Use with Hermes (and any agent runtime)
+## Use with Hermes (and any runtime)
 
-The `cognify` CLI works as-is — a Hermes agent shells out to it. Drop
-`integrations/hermes/SKILL.md` into the agent's skills. Or run the HTTP server for
-a shared/long-running graph:
-```bash
-pip install 'cognify-kg[serve]'
-cognify-serve                      # 127.0.0.1:8799
-curl -s localhost:8799/recall -d '{"query":"refund policy?","tenant":"acme"}' -H 'content-type: application/json'
-```
+The CLI works as-is for shell-native agents; drop `skills/clarkmem/SKILL.md`
+into the agent's skills directory. For a shared long-running graph, run the
+server:
 
-For a fleet-shared server, bind loopback + your VPN/tailnet IP (comma-separated;
-never 0.0.0.0), gate it with an API key, and go torch-free with the ONNX embedder:
 ```bash
-pip install 'cognify-kg[neo4j,serve,fastembed]'
-export COGNIFY_BACKEND=neo4j COGNIFY_EMBED_PROVIDER=fastembed
-export COGNIFY_HOST=127.0.0.1,100.x.y.z COGNIFY_API_KEY=$(openssl rand -hex 24)
-cognify-serve   # /health stays open; everything else needs x-api-key
+pip install 'clarkmem[neo4j,serve,fastembed]'
+export CLARKMEM_BACKEND=neo4j CLARKMEM_EMBED_PROVIDER=fastembed
+export CLARKMEM_HOST=127.0.0.1,100.x.y.z CLARKMEM_API_KEY=$(openssl rand -hex 24)
+clarkmem-serve   # /health open; everything else needs x-api-key
 ```
 
-Server-side path ingestion (`{"path": ...}`) is off by default; set
-`COGNIFY_INGEST_ROOT=<dir>` to allow it for files under that directory only.
-Text bodies are capped by `COGNIFY_MAX_TEXT` (default 2M chars).
-
-Bulk ingest is network-bound on the extractor; parallelize it with
-`--workers 8` (or `COGNIFY_EXTRACT_WORKERS`) and use `--cache` for cheap re-runs.
-
-## Multi-tenancy
-
-Every node carries a `tenant` (and `namespace`). Pass a different `tenant` per
-client/agent and their data stays isolated: the `local` backend is a separate
-store, the `neo4j` backend filters every query by tenant. This is what makes it
-safe to run one engine across many agents.
-
-## Recommended models (extraction)
-
-Extraction is one cheap LLM call per chunk; pick by cost vs throughput. Numbers
-below are from a real single-chunk extraction test, not vendor specs.
-
-| Model | Via | Cost (rough) | Notes |
-|---|---|---|---|
-| **`openai/gpt-4o-mini`** | OpenRouter / OpenAI | ~$0.15/$0.60 per M | **Recommended default.** Fast (~6s/chunk), reliable JSON. A 40-doc KB cost ~$0.20. |
-| `google/gemini-2.0-flash` | OpenRouter / Google | ~$0.10/$0.40 per M | Cheapest solid cloud option; big context. Google free tier rate-limits (429) — use a paid key for bulk. |
-| `deepseek/deepseek-chat` | OpenRouter | ~$0.14/$0.28 per M | Same quality as gpt-4o-mini but ~3× slower (~17s/chunk). Fine for small batches. |
-| local **Qwen / Llama 3.3 / Gemma** | Ollama / vLLM | free | The real free path for bulk. Run on your own GPU; point `COGNIFY_LLM_BASE` at it. |
-| Claude Haiku | Anthropic (native) | cheap | Set `ANTHROPIC_API_KEY`; auto-detected. Highest extraction quality of the cheap tier. |
-
-Avoid OpenRouter's **`:free`** model variants for bulk — they are heavily
-rate-limited (429) or very slow (one free model measured ~77s/chunk). Free is
-only practical on local inference.
-
-Switch model with one env var, e.g. local Ollama:
 ```bash
-export COGNIFY_LLM_BASE=http://localhost:11434/v1
-export COGNIFY_LLM_MODEL=qwen2.5:14b
-export COGNIFY_LLM_KEY=ollama        # any non-empty string
+curl -s localhost:8799/ingest  -H 'content-type: application/json' \
+  -d '{"text":"the refund policy is 14 days","title":"policy","tenant":"acme"}'
+curl -s localhost:8799/recall  -H 'content-type: application/json' \
+  -d '{"query":"refund policy?","tenant":"acme"}'
+curl -s localhost:8799/invalidate -H 'content-type: application/json' \
+  -d '{"subject":"Acme","predicate":"OFFERS","tenant":"acme"}'
 ```
+
+Server-side `{"path": ...}` ingestion is **off by default**; allow it for one
+directory with `CLARKMEM_INGEST_ROOT`. Text bodies are capped by
+`CLARKMEM_MAX_TEXT`. `k`/`hops` are clamped engine-wide.
+
+## How it compares
+
+| | **ClarkMem** | Cognee | Mem0 | Graphiti / Zep | LightRAG | plain RAG |
+|---|---|---|---|---|---|---|
+| Typed entity+relation graph | ✅ | ✅ | partial | ✅ | ✅ | ❌ |
+| Temporal facts (evidence, invalidation, history) | ✅ deterministic | ❌ | partial | ✅ (LLM-driven) | ❌ | ❌ |
+| Graph as a retrieval signal (anchored hybrid recall) | ✅ | ⚠️ | ❌ | ✅ | ✅ | ❌ |
+| Zero external services mode | ✅ | ❌ | ❌ | ❌ | ⚠️ | ✅ |
+| Torch-free local install | ✅ | ❌ | ❌ | ❌ | ❌ | varies |
+| Same API, swap local ↔ server | ✅ | ⚠️ | ❌ | ❌ | ❌ | n/a |
+| Built-in multi-tenancy | ✅ | ⚠️ | ✅ | ✅ | ❌ | ❌ |
+| MCP server for Claude | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Agent skills shipped in-repo | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Core small enough to read in a sitting | ✅ ~2k lines | ❌ | ❌ | ❌ | ⚠️ | ✅ |
+
+**Honest edges elsewhere:** Zep/Graphiti does LLM-driven contradiction
+detection and SOC2/HIPAA compliance; Cognee has more managed connectors; Mem0
+is the quickest hosted drop-in for pure conversational personalization.
+**ClarkMem wins when you want a real temporal knowledge graph an agent can run
+anywhere** — a laptop, an isolated client box, or a shared fleet server — with
+one dependency-light install and one API across all of them.
+
+## Extraction models
+
+One cheap LLM call per ~2KB chunk at ingest (never at recall). Recommended:
+`openai/gpt-4o-mini` via OpenRouter (~$0.20 per 40-doc KB), `gemini-2.0-flash`,
+a local Qwen/Llama via Ollama/vLLM (free, point `CLARKMEM_LLM_BASE` at it), or
+Claude Haiku (`ANTHROPIC_API_KEY`, auto-detected — best quality of the cheap
+tier). Avoid `:free` OpenRouter variants for bulk (heavy 429s).
 
 ## Configuration
 
-All via env (see `.env.example`): `COGNIFY_BACKEND`, `COGNIFY_DATA_DIR`,
-`COGNIFY_LLM_BASE/MODEL/KEY`, `COGNIFY_LLM_PROVIDER`, `COGNIFY_EMBED_PROVIDER`
-(`st` | `fastembed`), `COGNIFY_EXTRACT_WORKERS`, `COGNIFY_HOST/PORT`,
-`NEO4J_URI/USER/PASSWORD`.
-The LLM endpoint is OpenAI-compatible (OpenRouter, OpenAI, vLLM, Ollama) or native
-Anthropic (Claude). See the model table above.
+All via env — see `.env.example`. Primary prefix `CLARKMEM_*`; legacy
+`COGNIFY_*` names from the pre-rename era keep working. Key ones:
+`CLARKMEM_BACKEND`, `CLARKMEM_DATA_DIR`, `CLARKMEM_LLM_BASE/MODEL/KEY`,
+`CLARKMEM_EMBED_PROVIDER` (`st`|`fastembed`), `CLARKMEM_EXTRACT_WORKERS`,
+`CLARKMEM_HOST/PORT/API_KEY`, `CLARKMEM_INGEST_ROOT`, `CLARKMEM_MAX_TEXT`,
+`CLARKMEM_FUNCTIONAL_PREDICATES`, `NEO4J_URI/USER/PASSWORD`.
 
-## For agents
+## For agents working on this repo
 
-`CLAUDE.md` is the operating guide. `ARCHITECTURE.md` explains the design.
-`BLUEPRINT.md` is a from-scratch reconstruction spec: hand this repo to an agent
-and it can rebuild or extend the whole thing.
+`CLAUDE.md` is the operating guide, `ARCHITECTURE.md` the design,
+`BLUEPRINT.md` a from-scratch reconstruction spec, and
+`skills/clarkmem-dev/` the contributor skill (invariants, test harnesses,
+roadmap). Hand an agent this repo and it can use it, extend it, or rebuild it.
 
-MIT licensed.
+## Migrating from Cognify
+
+The GitHub URL redirects. `pip install clarkmem` replaces `cognify-kg`
+(never published to PyPI, so no package migration). Legacy `cognify`,
+`cognify-serve`, `cognify-mcp` commands and `COGNIFY_*` env vars still work.
+On-disk stores are read in place — including `~/.cognify` — no data migration.
+
+## License
+
+**Proprietary — © 2026 Weblyfe.** Source available for evaluation and security
+review; production use requires a license (see `LICENSE`). Versions ≤0.5.0
+were released under MIT as "Cognify" and remain MIT.

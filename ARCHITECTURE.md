@@ -3,7 +3,7 @@
 ## The idea
 
 Plain RAG loses structure: it can find a relevant chunk but not how facts connect.
-Cognify keeps both layers. Every document becomes (a) embedded chunks for fuzzy
+ClarkMem keeps both layers. Every document becomes (a) embedded chunks for fuzzy
 recall and (b) a typed graph (entities + relations) for precise, multi-hop
 traversal. Retrieval starts in the vector layer and expands into the graph.
 
@@ -27,11 +27,11 @@ Every node carries `tenant` + `namespace`.
 
 ## Flow
 
-### Ingest (Extract → Cognify → Load)
+### Ingest (Extract → Cognize → Load)
 1. **Extract** (`loader.py`): read md/txt/pdf or raw text, strip frontmatter, split
    on markdown headings, window long segments to ~2048 chars with 256 overlap,
    snapping to sentence boundaries.
-2. **Cognify** (`extractor.py`): one cheap LLM call per chunk returns strict JSON
+2. **Cognize** (`extractor.py`): one cheap LLM call per chunk returns strict JSON
    of typed entities + relations. Output is validated: unknown types collapse to
    `Concept`, relations whose endpoints aren't extracted entities are dropped,
    everything deduped. Transport errors raise; bad JSON returns empty.
@@ -41,11 +41,12 @@ Every node carries `tenant` + `namespace`.
 
 ### Recall (hybrid)
 1. Embed the query (same model/space as ingest).
-2. Vector search within the tenant (and namespace if given), dedup by text.
+2. Vector search within the tenant (and namespace if given), dedup by chunk id,
+   fused with entity-anchored chunks (see Hybrid recall below).
 3. Expand: from the hit chunks, fetch mentioned entities and their typed
    relations (1 hop) from the graph.
 4. Return chunks + the entity/relation subgraph. An LLM can compose a final
-   answer over this; Cognify returns the structured evidence.
+   answer over this; ClarkMem returns the structured evidence.
 
 ## Why two backends
 
@@ -73,3 +74,19 @@ graph built on one is queryable by the other.
   default.
 - The local graph is loaded into memory per tenant; fine for box-scale corpora,
   not millions of nodes (use the neo4j backend there).
+
+## Temporal facts (1.0)
+
+Every `REL` edge carries `observed_at`, `updated_at`, `evidence` (how many
+ingests asserted it) and optionally `invalid_at`. Re-assertion bumps evidence
+and revives a closed fact. `invalidate()` closes facts by name (optionally
+narrowed by predicate/object). Functional predicates (env) auto-close a
+subject's older objects. Recall and multi-hop traversal skip invalidated edges
+unless `include_invalidated` — history is preserved, never rewritten.
+
+## Hybrid recall (1.0)
+
+Vector top-k and entity-anchored chunks (entities literally named in the query,
+longest names first) are fused with reciprocal-rank fusion. Rank-only fusion
+sidesteps score-scale mismatches; the graph acts as a retrieval signal, not
+just decoration. `maintain()` reconciles graph ↔ vectors per tenant.

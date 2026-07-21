@@ -2,15 +2,15 @@
 import json
 from pathlib import Path
 
-import cognify
+import clarkmem
 
-be = cognify.get_backend("local")  # zero external services
+be = clarkmem.get_backend("local")  # zero external services
 doc = Path(__file__).parent / "sample_docs" / "acme.md"
 
-r = cognify.ingest(be, str(doc), tenant="demo", namespace="docs")
+r = clarkmem.ingest(be, str(doc), tenant="demo", namespace="docs")
 print("ingested:", json.dumps(r.__dict__))
 
-res = cognify.recall(be, "what does Pathfinder run on and who owns it?", tenant="demo")
+res = clarkmem.recall(be, "what does Pathfinder run on and who owns it?", tenant="demo")
 print("\nchunks:")
 for c in res.chunks:
     print(f"  {c['score']:.3f}  {c['text'][:70]}")
