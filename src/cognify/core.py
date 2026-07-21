@@ -83,8 +83,15 @@ class Backend(Protocol):
     def load_document(self, doc: Document, *, tenant: str, namespace: str, agent: str,
                       chunk_vecs: np.ndarray, extractions: dict) -> None: ...
     def search(self, qvec: np.ndarray, *, tenant: str, namespace: Optional[str], k: int) -> list[dict]: ...
-    def expand(self, chunk_ids: list[str], *, tenant: str, hops: int) -> dict: ...
+    def anchor_chunks(self, query: str, *, tenant: str, namespace: Optional[str],
+                      limit: int) -> list[dict]: ...
+    def expand(self, chunk_ids: list[str], *, tenant: str, hops: int,
+               include_invalidated: bool = False) -> dict: ...
+    def invalidate_relations(self, subject: str, *, tenant: str,
+                             predicate: Optional[str] = None,
+                             object: Optional[str] = None) -> int: ...
     def delete_document(self, doc_id: str, *, tenant: str) -> dict: ...
+    def maintain(self, *, tenant: str) -> dict: ...
     def stats(self, *, tenant: Optional[str], namespace: Optional[str] = None) -> dict: ...
 
 
@@ -130,14 +137,49 @@ def ingest(backend, path_or_text: str, *, tenant: str = "default", namespace: st
     return IngestResult(doc.id, doc.title, tenant, namespace, len(doc.chunks), n_ent, n_rel, extracted)
 
 
+def _rrf(ranked_lists: list, k: int) -> list:
+    """Reciprocal-rank fusion by chunk id (rank-only, so vector-similarity and
+    anchor scores never need to share a scale). Keeps the first-seen row."""
+    rows, scores = {}, {}
+    for ranked in ranked_lists:
+        for rank, row in enumerate(ranked):
+            cid = row["id"]
+            rows.setdefault(cid, row)
+            scores[cid] = scores.get(cid, 0.0) + 1.0 / (60 + rank)
+    out = []
+    for cid in sorted(scores, key=scores.get, reverse=True)[:k]:
+        out.append({**rows[cid], "score": round(scores[cid], 4)})
+    return out
+
+
 def recall(backend, query: str, *, tenant: str = "default", namespace: Optional[str] = None,
-           k: int = 8, hops: int = 1) -> RecallResult:
+           k: int = 8, hops: int = 1, mode: str = "hybrid",
+           include_invalidated: bool = False) -> RecallResult:
+    """Hybrid retrieval: vector search fused (RRF) with entity-anchored chunks —
+    chunks that mention entities literally named in the query. mode="vector"
+    skips the anchor pass. Invalidated facts are excluded unless asked for."""
     # single choke point for bounds — every entry point (CLI/HTTP/MCP) funnels here
     k = max(1, min(int(k), 100))
     hops = max(1, min(int(hops), 3))
     qvec = _embed_texts(backend, [query])
     chunks = backend.search(qvec, tenant=tenant, namespace=namespace, k=k)
+    if mode != "vector":
+        fn = getattr(backend, "anchor_chunks", None)  # optional for custom backends
+        anchored = fn(query, tenant=tenant, namespace=namespace, limit=k) if callable(fn) else []
+        if anchored:
+            chunks = _rrf([chunks, anchored], k)
     cids = [c["id"] for c in chunks]
-    sub = backend.expand(cids, tenant=tenant, hops=hops) if cids else {"entities": [], "relations": []}
+    sub = backend.expand(cids, tenant=tenant, hops=hops,
+                         include_invalidated=include_invalidated) \
+        if cids else {"entities": [], "relations": []}
     return RecallResult(query, tenant, tuple(chunks),
                         tuple(sub.get("entities", [])), tuple(sub.get("relations", [])))
+
+
+def invalidate(backend, subject: str, *, tenant: str = "default",
+               predicate: Optional[str] = None, object: Optional[str] = None) -> int:
+    """Mark a subject's matching CURRENT relations as no longer true. The facts
+    stay in the graph with invalid_at set — history is preserved, recall skips
+    them. Narrow with predicate and/or object. Returns how many were closed."""
+    return backend.invalidate_relations(subject, tenant=tenant,
+                                        predicate=predicate, object=object)

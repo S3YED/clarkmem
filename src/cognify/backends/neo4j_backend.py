@@ -168,8 +168,19 @@ class Neo4jBackend:
                       f"MATCH (c:{_CHUNK} {{id:r.cid, tenant:$t}}) MERGE (e)-[:MENTIONED_IN]->(c)",
                       rows=ment_rows, t=tenant)
             if rel_rows:
+                fn = config.functional_predicates()
+                fn_rows = [r for r in rel_rows if r["type"] in fn]
+                if fn_rows:  # one current object per functional predicate
+                    s.run(f"UNWIND $rows AS r MATCH (a:{_ENT} {{id:r.sid}})"
+                          f"-[rel:REL {{type:r.type}}]->(b:{_ENT}) "
+                          "WHERE b.id <> r.oid AND rel.invalid_at IS NULL "
+                          "SET rel.invalid_at=$ts", rows=fn_rows, ts=ts)
                 s.run(f"UNWIND $rows AS r MATCH (a:{_ENT} {{id:r.sid}}) MATCH (b:{_ENT} {{id:r.oid}}) "
-                      "MERGE (a)-[rel:REL {type:r.type}]->(b) SET rel.doc_id=r.doc_id", rows=rel_rows)
+                      "MERGE (a)-[rel:REL {type:r.type}]->(b) "
+                      "ON CREATE SET rel.observed_at=$ts, rel.evidence=1 "
+                      "ON MATCH SET rel.evidence=coalesce(rel.evidence,1)+1 "
+                      "SET rel.updated_at=$ts, rel.doc_id=r.doc_id, rel.invalid_at=null",
+                      rows=rel_rows, ts=ts)
             if stale:  # a shrink can strand entities whose only mentions were stale chunks
                 self._prune_orphans(s, tenant)
         return stale
@@ -199,10 +210,13 @@ class Neo4jBackend:
         return out
 
     # -- expand ------------------------------------------------------------
-    def expand(self, chunk_ids, *, tenant, hops):
+    def expand(self, chunk_ids, *, tenant, hops, include_invalidated=False):
         if not chunk_ids:
             return {"entities": [], "relations": []}
         h = max(1, min(int(hops or 1), 3))  # var-length bounds can't be parameterized
+        # invalidated facts neither surface nor carry the traversal onward
+        live = "" if include_invalidated \
+            else "AND all(rr IN relationships(p) WHERE rr.invalid_at IS NULL) "
         with self._driver.session() as s:
             ent = s.run(f"MATCH (e:{_ENT})-[:MENTIONED_IN]->(c:{_CHUNK}) "
                         "WHERE c.id IN $cids AND c.tenant=$t AND e.tenant=$t "
@@ -212,18 +226,85 @@ class Neo4jBackend:
             rel, more = [], []
             if eids:
                 rel = s.run(f"MATCH p=(a:{_ENT})-[:REL*1..{h}]->(:{_ENT}) "
-                            "WHERE a.id IN $e AND a.tenant=$t "
+                            f"WHERE a.id IN $e AND a.tenant=$t {live}"
                             "UNWIND relationships(p) AS r "
                             "RETURN DISTINCT startNode(r).name AS subject, r.type AS predicate, "
-                            "endNode(r).name AS object LIMIT 200",
+                            "endNode(r).name AS object, coalesce(r.evidence,1) AS evidence, "
+                            "r.invalid_at AS invalid_at LIMIT 200",
                             e=eids, t=tenant).data()
+                for r in rel:
+                    if r.get("invalid_at") is None:
+                        r.pop("invalid_at", None)
                 if h > 1:
                     more = s.run(f"MATCH p=(a:{_ENT})-[:REL*1..{h}]->(:{_ENT}) "
-                                 "WHERE a.id IN $e AND a.tenant=$t "
+                                 f"WHERE a.id IN $e AND a.tenant=$t {live}"
                                  "UNWIND nodes(p) AS n WITH DISTINCT n WHERE NOT n.id IN $e "
                                  "RETURN n.name AS name, n.etype AS etype, n.id AS id LIMIT 50",
                                  e=eids, t=tenant).data()
         return {"entities": (ent + more)[:100], "relations": rel}
+
+    # -- anchoring / temporal / maintenance --------------------------------
+    def anchor_chunks(self, query, *, tenant, namespace, limit):
+        """Chunks that mention entities literally named in the query — the graph
+        as a retrieval signal (HippoRAG-style anchoring, no LLM at recall time).
+        Longest entity names win: they are the most specific."""
+        q = " " + " ".join(re.sub(r"[^\w\s.-]", " ", query.lower()).split()) + " "
+        ns = "AND c.namespace=$ns " if namespace else ""
+        with self._driver.session() as s:
+            rows = s.run(
+                f"MATCH (e:{_ENT} {{tenant:$t}}) WHERE size(e.name) >= 3 "
+                "AND $q CONTAINS (' ' + toLower(e.name) + ' ') "
+                "WITH e ORDER BY size(e.name) DESC LIMIT 8 "
+                f"MATCH (e)-[:MENTIONED_IN]->(c:{_CHUNK} {{tenant:$t}}) " + ns +
+                f"OPTIONAL MATCH (c)-[:PART_OF]->(d:{_DOC}) "
+                "RETURN DISTINCT c.id AS id, c.text AS text, c.heading AS heading, "
+                "c.doc_id AS doc_id, c.namespace AS namespace, d.title AS title, "
+                "e.name AS anchor LIMIT $lim",
+                t=tenant, q=q, ns=namespace, lim=int(limit)).data()
+        out, seen = [], set()
+        for r in rows:
+            if r["id"] in seen:
+                continue
+            seen.add(r["id"])
+            out.append({"id": r["id"], "text": (r.get("text") or "")[:2000],
+                        "heading": r.get("heading") or "", "doc_id": r.get("doc_id") or "",
+                        "title": r.get("title") or "", "namespace": r.get("namespace") or "",
+                        "score": 0.0, "anchor": r.get("anchor")})
+        return out[:limit]
+
+    def invalidate_relations(self, subject, *, tenant, predicate=None, object=None):
+        """Close matching CURRENT facts (set invalid_at; kept for history)."""
+        with self._driver.session() as s:
+            return s.run(
+                f"MATCH (a:{_ENT} {{tenant:$t}})-[r:REL]->(b:{_ENT}) "
+                "WHERE toLower(a.name)=$s AND r.invalid_at IS NULL "
+                "AND ($p IS NULL OR r.type=$p) AND ($o IS NULL OR toLower(b.name)=$o) "
+                "SET r.invalid_at=$ts RETURN count(r) AS n",
+                t=tenant, s=subject.lower().strip(),
+                p=predicate.upper().strip() if predicate else None,
+                o=object.lower().strip() if object else None,
+                ts=time.time()).single()["n"]
+
+    def maintain(self, *, tenant):
+        """Integrity pass: drop chunks whose document is gone, prune orphan
+        entities, reconcile vectors with graph chunks (also heals pre-0.5
+        ghost vectors). Safe to run anytime."""
+        with self._lock:
+            with self._driver.session() as s:
+                dangling = s.run(
+                    f"MATCH (c:{_CHUNK} {{tenant:$t}}) WHERE NOT (c)-[:PART_OF]->() "
+                    "WITH c DETACH DELETE c RETURN count(*) AS n", t=tenant).single()["n"]
+                pruned = self._prune_orphans(s, tenant)
+                chunk_ids = {r["id"] for r in s.run(
+                    f"MATCH (c:{_CHUNK} {{tenant:$t}}) RETURN c.id AS id", t=tenant)}
+            idx, meta = self._load_index(tenant)
+            have = {row["id"] for row in meta.values()}
+            extra = sorted(have - chunk_ids)
+            self._drop_vectors(idx, meta, extra)
+            self._save_index(tenant)
+        return {"tenant": tenant, "dangling_chunks_removed": dangling,
+                "entities_pruned": pruned, "vectors_removed": len(extra),
+                "vectors_missing": len(chunk_ids - have)}
 
     # -- delete ------------------------------------------------------------
     def delete_document(self, doc_id, *, tenant):

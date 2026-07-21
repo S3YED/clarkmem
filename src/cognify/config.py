@@ -33,6 +33,15 @@ EMBED_PROVIDER = os.environ.get("COGNIFY_EMBED_PROVIDER", "st").lower()
 # Parallel per-chunk extraction (the LLM call is network-bound). 1 = serial.
 EXTRACT_WORKERS = max(1, int(os.environ.get("COGNIFY_EXTRACT_WORKERS", "1")))
 
+
+# --- temporal facts ----------------------------------------------------------
+def functional_predicates() -> set[str]:
+    """Predicates where a subject holds ONE current object (WORKS_AT, LOCATED_IN,
+    ...): asserting a new object auto-invalidates the subject's older facts for
+    that predicate. Comma-separated env; empty (default) = never auto-invalidate."""
+    raw = os.environ.get("COGNIFY_FUNCTIONAL_PREDICATES", "")
+    return {p.strip().upper() for p in raw.split(",") if p.strip()}
+
 # --- LLM extractor ----------------------------------------------------------
 # Provider: "openai" (any OpenAI-compatible /chat/completions: OpenRouter, OpenAI,
 # vLLM, Ollama) or "anthropic" (Claude messages API, native). Auto-detects Claude

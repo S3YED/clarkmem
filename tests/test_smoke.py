@@ -302,15 +302,29 @@ def test_server_clamps_and_path_gate(monkeypatch, tmp_path):
             StubBackend.seen_k = k
             return []
 
-        def expand(self, chunk_ids, *, tenant, hops):
+        def anchor_chunks(self, query, *, tenant, namespace, limit):
+            return []
+
+        def expand(self, chunk_ids, *, tenant, hops, include_invalidated=False):
             return {"entities": [], "relations": []}
 
         def load_document(self, doc, **kw):
             pass
 
+        def invalidate_relations(self, subject, *, tenant, predicate=None, object=None):
+            return 2
+
+        def maintain(self, *, tenant):
+            return {"tenant": tenant, "entities_pruned": 0}
+
     monkeypatch.setattr(server, "_backend", StubBackend())
     monkeypatch.delenv("COGNIFY_API_KEY", raising=False)
     c = TestClient(server.app)
+
+    assert c.post("/invalidate", json={"subject": "Clark"}).json() == {"invalidated": 2}
+    assert c.post("/invalidate", json={}).status_code == 400
+    assert c.post("/maintain", json={"tenant": "t"}).status_code == 200
+    assert c.post("/maintain", json={}).status_code == 400
 
     assert c.post("/recall", json={"query": "x", "k": 99999}).status_code == 200
     assert StubBackend.seen_k == 100                       # k clamped
@@ -325,6 +339,93 @@ def test_server_clamps_and_path_gate(monkeypatch, tmp_path):
 
     monkeypatch.setenv("COGNIFY_MAX_TEXT", "100")
     assert c.post("/ingest", json={"text": "y" * 200}).status_code == 413  # size cap
+
+
+def test_temporal_evidence_invalidate_revive(monkeypatch, tmp_path):
+    be = _local_backend_or_skip(monkeypatch, tmp_path)
+    _stub_extract_two_docs(monkeypatch)
+    turtle = "quantum turtles stack in shells all the way down today"
+    cognify.ingest(be, turtle, is_path=False, tenant="t", key="n1")
+    cognify.ingest(be, turtle + " again", is_path=False, tenant="t", key="n2")
+    rels = {(r["subject"], r["object"]): r for r in
+            cognify.recall(be, "quantum turtles", tenant="t", k=1).relations}
+    assert rels[("A", "B")]["evidence"] == 2          # two docs assert the fact
+
+    assert cognify.invalidate(be, "A", tenant="t") == 1
+    live = cognify.recall(be, "quantum turtles", tenant="t", k=1)
+    assert not live.relations                          # closed facts stay hidden
+    hist = cognify.recall(be, "quantum turtles", tenant="t", k=1, include_invalidated=True)
+    assert any(r.get("invalid_at") for r in hist.relations)  # ...but not erased
+
+    cognify.ingest(be, turtle + " once more", is_path=False, tenant="t", key="n3")
+    revived = cognify.recall(be, "quantum turtles", tenant="t", k=1)
+    assert any(r["subject"] == "A" for r in revived.relations)  # new evidence revives
+    be.close()
+
+
+def test_functional_predicate_supersedes(monkeypatch, tmp_path):
+    from cognify import core
+    from cognify.extractor import Entity, Relation
+    be = _local_backend_or_skip(monkeypatch, tmp_path)
+    monkeypatch.setenv("COGNIFY_FUNCTIONAL_PREDICATES", "WORKS_AT")
+
+    def fake_extract(text, **kw):
+        org = "Acme" if "acme" in text else "Globex"
+        return Extraction(entities=(Entity("Sam", "Person"), Entity(org, "Organization")),
+                          relations=(Relation("Sam", "WORKS_AT", org),))
+
+    monkeypatch.setattr(core._ex, "extract", fake_extract)
+    cognify.ingest(be, "sam joined acme years ago and stayed a long time",
+                   is_path=False, tenant="t")
+    cognify.ingest(be, "sam moved over to globex just this spring season",
+                   is_path=False, tenant="t")
+    rels = cognify.recall(be, "where does sam work", tenant="t", k=8).relations
+    objs = {r["object"] for r in rels if r["subject"] == "Sam"}
+    assert objs == {"Globex"}                          # old employer closed, not shown
+    hist = cognify.recall(be, "where does sam work", tenant="t", k=8,
+                          include_invalidated=True).relations
+    assert {"Acme", "Globex"} <= {r["object"] for r in hist if r["subject"] == "Sam"}
+    be.close()
+
+
+def test_anchor_chunks_and_hybrid_fusion(monkeypatch, tmp_path):
+    from cognify import core
+    from cognify.extractor import Entity
+    be = _local_backend_or_skip(monkeypatch, tmp_path)
+
+    def fake_extract(text, **kw):
+        return Extraction(entities=(Entity("Zebrastripe Observatory", "Location"),),
+                          relations=())
+
+    monkeypatch.setattr(core._ex, "extract", fake_extract)
+    cognify.ingest(be, "the dome atop the hill hosts nightly stargazing sessions",
+                   is_path=False, tenant="t")
+    hits = be.anchor_chunks("history of the Zebrastripe Observatory building",
+                            tenant="t", namespace=None, limit=5)
+    assert hits and hits[0]["anchor"] == "Zebrastripe Observatory"
+    assert "stargazing" in hits[0]["text"]
+
+    # rrf fuses distinct vector + anchor lists, both survive
+    fused = core._rrf([[{"id": "x", "text": "vec"}], [{"id": "y", "text": "anc"}]], k=8)
+    assert {r["id"] for r in fused} == {"x", "y"}
+    be.close()
+
+
+def test_local_maintain_heals(monkeypatch, tmp_path):
+    be = _local_backend_or_skip(monkeypatch, tmp_path)
+    _stub_extract_two_docs(monkeypatch)
+    r1 = cognify.ingest(be, "quantum turtles stack in shells all the way down today",
+                        is_path=False, tenant="t")
+    cognify.ingest(be, "medieval cheese wheels ferment in stone cellars for years",
+                   is_path=False, tenant="t")
+    g = be._load_graph("t")
+    g.remove_node(f"doc::{r1.doc_id}")                 # simulate historical drift
+    rep = be.maintain(tenant="t")
+    assert rep["dangling_chunks_removed"] == 1 and rep["vectors_removed"] == 1
+    assert rep["entities_pruned"] == 1                 # A orphaned; B survives via doc2
+    s = be.stats(tenant="t")
+    assert s["documents"] == 1 and s["chunks"] == 1 and s["vectors"] == 1
+    be.close()
 
 
 def test_local_e2e():

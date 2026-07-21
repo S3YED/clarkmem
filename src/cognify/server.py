@@ -8,9 +8,11 @@ Env:  COGNIFY_HOST (comma-separated for multi-bind), COGNIFY_PORT, COGNIFY_BACKE
       plus the usual LLM/Neo4j vars.
 
 Endpoints:
-  GET    /health   (always open — for watchdogs)
-  POST   /ingest   {text|path, title, tenant, namespace, agent, extract, workers}
-  POST   /recall   {query, tenant, namespace, k, hops}
+  GET    /health     (always open — for watchdogs)
+  POST   /ingest     {text|path, title, key, tenant, namespace, agent, extract, workers}
+  POST   /recall     {query, tenant, namespace, k, hops, mode, include_invalidated}
+  POST   /invalidate {subject, predicate?, object?, tenant}   fact is closed, kept
+  POST   /maintain   {tenant}                                  integrity pass
   DELETE /doc?doc_id=&tenant=
   GET    /stats?tenant=&namespace=
 
@@ -107,11 +109,39 @@ def recall(body: dict, x_api_key: str | None = Header(None)):
         raise HTTPException(400, "k and hops must be integers")
     try:
         res = cognify.recall(_be(), q, tenant=body.get("tenant", "default"),
-                             namespace=body.get("namespace"), k=k, hops=hops)
+                             namespace=body.get("namespace"), k=k, hops=hops,
+                             mode=body.get("mode", "hybrid"),
+                             include_invalidated=bool(body.get("include_invalidated")))
         return {"query": res.query, "tenant": res.tenant, "chunks": list(res.chunks),
                 "entities": list(res.entities), "relations": list(res.relations)}
     except Exception as e:
         raise HTTPException(500, f"recall failed: {e}")
+
+
+@app.post("/invalidate")
+def invalidate(body: dict, x_api_key: str | None = Header(None)):
+    _auth(x_api_key)
+    subject = body.get("subject")
+    if not subject:
+        raise HTTPException(400, "provide 'subject' (and optionally predicate/object)")
+    try:
+        n = cognify.invalidate(_be(), str(subject), tenant=body.get("tenant", "default"),
+                               predicate=body.get("predicate"), object=body.get("object"))
+        return {"invalidated": n}
+    except Exception as e:
+        raise HTTPException(500, f"invalidate failed: {e}")
+
+
+@app.post("/maintain")
+def maintain(body: dict, x_api_key: str | None = Header(None)):
+    _auth(x_api_key)
+    tenant = body.get("tenant")
+    if not tenant:
+        raise HTTPException(400, "provide 'tenant'")
+    try:
+        return _be().maintain(tenant=tenant)
+    except Exception as e:
+        raise HTTPException(500, f"maintain failed: {e}")
 
 
 @app.delete("/doc")

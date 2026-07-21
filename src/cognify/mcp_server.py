@@ -65,6 +65,17 @@ def cognify_recall(query: str, tenant: str = "default", k: int = 8,
 
 
 @mcp.tool()
+def cognify_invalidate(subject: str, tenant: str = "default",
+                       predicate: Optional[str] = None,
+                       object: Optional[str] = None) -> dict:
+    """Mark a fact as no longer true without erasing history: closes the
+    subject's matching current relations (optionally narrowed by predicate
+    and/or object). Use when the world changed — e.g. someone changed jobs."""
+    n = cognify.invalidate(_be(), subject, tenant=tenant, predicate=predicate, object=object)
+    return {"invalidated": n}
+
+
+@mcp.tool()
 def cognify_forget(doc_id: str, tenant: str = "default") -> dict:
     """Delete a document from the knowledge graph: its chunks, vectors, and any
     entities that are no longer mentioned anywhere. Get doc_id from ingest

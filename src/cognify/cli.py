@@ -72,14 +72,31 @@ def cmd_ingest_dir(a):
 
 def cmd_recall(a):
     be = cognify.get_backend(a.backend)
-    res = cognify.recall(be, a.query, tenant=a.tenant, namespace=a.namespace, k=a.k, hops=a.hops)
+    res = cognify.recall(be, a.query, tenant=a.tenant, namespace=a.namespace, k=a.k, hops=a.hops,
+                         mode=a.mode, include_invalidated=a.include_invalidated)
     print(json.dumps({
         "query": res.query, "tenant": res.tenant,
-        "chunks": [{"score": c["score"], "heading": c.get("heading"), "text": c["text"][:200]}
+        "chunks": [{"score": c["score"], "heading": c.get("heading"), "text": c["text"][:200],
+                    **({"anchor": c["anchor"]} if c.get("anchor") else {})}
                    for c in res.chunks],
         "entities": [f"{e['name']} ({e['etype']})" for e in res.entities],
-        "relations": [f"{r['subject']} -{r['predicate']}-> {r['object']}" for r in res.relations],
+        "relations": [f"{r['subject']} -{r['predicate']}-> {r['object']}"
+                      + (f"  [x{r['evidence']}]" if r.get("evidence", 1) > 1 else "")
+                      + ("  [invalidated]" if r.get("invalid_at") else "")
+                      for r in res.relations],
     }, indent=2, ensure_ascii=False)); be.close()
+
+
+def cmd_invalidate(a):
+    be = cognify.get_backend(a.backend)
+    n = cognify.invalidate(be, a.subject, tenant=a.tenant,
+                           predicate=a.predicate or None, object=a.object or None)
+    print(json.dumps({"invalidated": n})); be.close()
+
+
+def cmd_maintain(a):
+    be = cognify.get_backend(a.backend)
+    print(json.dumps(be.maintain(tenant=a.tenant), indent=2)); be.close()
 
 
 def cmd_stats(a):
@@ -105,7 +122,9 @@ def main():
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("ingest"); s.add_argument("path"); s.add_argument("--no-extract", action="store_true"); s.add_argument("--workers", type=int, default=0); s.add_argument("--key", default="", help="stable identity for an evolving note (re-ingest updates in place)"); s.set_defaults(fn=cmd_ingest)
     s = sub.add_parser("ingest-dir"); s.add_argument("path"); s.add_argument("--glob", default="**/*.md"); s.add_argument("--limit", type=int, default=0); s.add_argument("--no-extract", action="store_true"); s.add_argument("--cache", action="store_true"); s.add_argument("--workers", type=int, default=0); s.set_defaults(fn=cmd_ingest_dir)
-    s = sub.add_parser("recall"); s.add_argument("query"); s.add_argument("-k", type=int, default=8); s.add_argument("--hops", type=int, default=1); s.set_defaults(fn=cmd_recall)
+    s = sub.add_parser("recall"); s.add_argument("query"); s.add_argument("-k", type=int, default=8); s.add_argument("--hops", type=int, default=1); s.add_argument("--mode", default="hybrid", choices=["hybrid", "vector"]); s.add_argument("--include-invalidated", action="store_true"); s.set_defaults(fn=cmd_recall)
+    s = sub.add_parser("invalidate"); s.add_argument("subject"); s.add_argument("--predicate", default=""); s.add_argument("--object", default=""); s.set_defaults(fn=cmd_invalidate)
+    s = sub.add_parser("maintain"); s.set_defaults(fn=cmd_maintain)
     s = sub.add_parser("forget"); s.add_argument("doc_id"); s.set_defaults(fn=cmd_forget)
     s = sub.add_parser("stats"); s.set_defaults(fn=cmd_stats)
     a = p.parse_args(); a.fn(a)
