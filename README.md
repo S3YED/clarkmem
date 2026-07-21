@@ -42,6 +42,20 @@ ClarkMem keeps three layers in one engine:
 Same 384d embedding space on both backends, so a graph built locally is
 queryable on the server and vice versa.
 
+## Core technology
+
+- **Python 3.10+** — ~2k lines, src layout, frozen dataclasses, one file per concern
+- **ChromaDB** (embedded) with its bundled **ONNX MiniLM** — local vectors, no torch, no services
+- **networkx** MultiDiGraph — local typed graph, persisted as JSON per tenant
+- **Neo4j 5** — fleet-scale property graph (C-prefixed labels, tenant-keyed nodes)
+- **TurboVec** — per-tenant server-side vector index
+- **fastembed / sentence-transformers** — one L2-normalized 384d space everywhere (`all-MiniLM-L6-v2`)
+- **FastAPI + Uvicorn** — the HTTP surface (multi-bind, constant-time API-key auth)
+- **MCP SDK** (FastMCP) — native tools for Claude Code / Claude Desktop
+- **pypdf** for PDF ingestion; **numpy** and **requests** are the only hard dependencies
+- **Extraction LLM** — any OpenAI-compatible endpoint (OpenRouter, OpenAI, vLLM, Ollama) or
+  native Anthropic Claude; one cheap call per chunk at write time, **zero LLM calls at recall**
+
 ## 60-second start
 
 ```bash
