@@ -411,6 +411,53 @@ def test_anchor_chunks_and_hybrid_fusion(monkeypatch, tmp_path):
     be.close()
 
 
+def test_hybrid_recall_namespace_filter(monkeypatch, tmp_path):
+    """Regression (v1.0.0): namespaced recall in the DEFAULT hybrid mode must
+    filter both lanes, not fail — the neo4j anchor Cypher was invalid whenever
+    a namespace was set, 500-ing every namespaced /recall."""
+    from clarkmem import core
+    from clarkmem.extractor import Entity
+    be = _local_backend_or_skip(monkeypatch, tmp_path)
+
+    def fake_extract(text, **kw):  # same entity in both namespaces
+        return Extraction(entities=(Entity("Kelpwatch Station", "Location"),), relations=())
+
+    monkeypatch.setattr(core._ex, "extract", fake_extract)
+    clarkmem.ingest(be, "the reef sensors at the station log kelp density hourly",
+                   is_path=False, tenant="t", namespace="ocean")
+    clarkmem.ingest(be, "alpine weather balloons report wind shear at dawn",
+                   is_path=False, tenant="t", namespace="sky")
+    res = clarkmem.recall(be, "Kelpwatch Station kelp readings", tenant="t", namespace="ocean")
+    assert res.chunks and all(c["namespace"] == "ocean" for c in res.chunks)
+    assert any("reef sensors" in c["text"] for c in res.chunks)
+    other = clarkmem.recall(be, "Kelpwatch Station kelp readings", tenant="t", namespace="sky")
+    assert all(c["namespace"] == "sky" for c in other.chunks)  # anchor lane filtered too
+    be.close()
+
+
+def test_recall_survives_anchor_failure():
+    """A broken anchor lane must degrade to vector-only results, never kill the
+    whole recall (how the v1.0.0 neo4j bug became a total namespaced-recall
+    outage instead of a soft one)."""
+    import numpy as np
+
+    class Backend:
+        def embed_texts(self, texts):
+            return np.zeros((len(texts), 384), dtype=np.float32)
+
+        def search(self, qvec, *, tenant, namespace, k):
+            return [{"id": "c1", "text": "vector hit", "namespace": namespace or ""}]
+
+        def anchor_chunks(self, query, *, tenant, namespace, limit):
+            raise RuntimeError("boom")
+
+        def expand(self, chunk_ids, *, tenant, hops, include_invalidated=False):
+            return {"entities": [], "relations": []}
+
+    res = clarkmem.recall(Backend(), "q", tenant="t", namespace="n")
+    assert [c["id"] for c in res.chunks] == ["c1"]
+
+
 def test_local_maintain_heals(monkeypatch, tmp_path):
     be = _local_backend_or_skip(monkeypatch, tmp_path)
     _stub_extract_two_docs(monkeypatch)

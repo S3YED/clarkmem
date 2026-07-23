@@ -164,8 +164,13 @@ def recall(backend, query: str, *, tenant: str = "default", namespace: Optional[
     qvec = _embed_texts(backend, [query])
     chunks = backend.search(qvec, tenant=tenant, namespace=namespace, k=k)
     if mode != "vector":
+        anchored = []
         fn = getattr(backend, "anchor_chunks", None)  # optional for custom backends
-        anchored = fn(query, tenant=tenant, namespace=namespace, limit=k) if callable(fn) else []
+        if callable(fn):
+            try:
+                anchored = fn(query, tenant=tenant, namespace=namespace, limit=k)
+            except Exception as e:  # degrade, don't crash: vector hits still stand
+                log.warning("anchor lane failed, returning vector hits only: %s", e)
         if anchored:
             chunks = _rrf([chunks, anchored], k)
     cids = [c["id"] for c in chunks]

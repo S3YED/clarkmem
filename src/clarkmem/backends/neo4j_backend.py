@@ -249,7 +249,9 @@ class Neo4jBackend:
         as a retrieval signal (HippoRAG-style anchoring, no LLM at recall time).
         Longest entity names win: they are the most specific."""
         q = " " + " ".join(re.sub(r"[^\w\s.-]", " ", query.lower()).split()) + " "
-        ns = "AND c.namespace=$ns " if namespace else ""
+        # the chunk MATCH below has no other predicate, so this must open a
+        # WHERE clause ("AND ..." after a bare MATCH is a Cypher syntax error)
+        ns = "WHERE c.namespace=$ns " if namespace else ""
         with self._driver.session() as s:
             rows = s.run(
                 f"MATCH (e:{_ENT} {{tenant:$t}}) WHERE size(e.name) >= 3 "

@@ -12,4 +12,4 @@ from .core import (ingest, recall, invalidate, embed, get_model,  # noqa: F401
                    IngestResult, RecallResult)
 from .backends import get_backend  # noqa: F401
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
